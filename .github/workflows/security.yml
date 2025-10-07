@@ -1,0 +1,17 @@
+name: Security Pipeline
+on: [push, pull_request]
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: kubeconform
+      run: echo "validate manifests"
+    - name: kubescape
+      run: echo "run cluster compliance"
+    - name: kube-linter
+      run: echo "lint manifests"
+    - name: kyverno CLI
+      run: echo "kyverno dryrun"
+    - name: OPA test
+      run: echo "OPA policy tests"

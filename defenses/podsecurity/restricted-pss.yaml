@@ -1,0 +1,14 @@
+apiVersion: policy/v1
+kind: PodSecurityPolicy
+metadata:
+  name: restricted-pss
+spec:
+  privileged: false
+  allowPrivilegeEscalation: false
+  requiredDropCapabilities:
+    - ALL
+  volumes:
+    - 'configMap'
+    - 'secret'
+    - 'emptyDir'
+    - 'projected'

@@ -1,0 +1,6 @@
+- rule: Unexpected Shell
+  desc: Detect shell spawned in container
+  condition: spawned_process and container and proc.name = bash
+  output: Unexpected shell spawned in container (user=%user.name command=%proc.cmdline)
+  priority: WARNING
+  tags: [container]
