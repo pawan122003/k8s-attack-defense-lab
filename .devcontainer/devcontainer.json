@@ -1,0 +1,66 @@
+{
+  "name": "Kubernetes Security Lab",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  
+  // Features to install - includes all security tools needed
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
+      "version": "latest",
+      "helm": "latest",
+      "minikube": "none"
+    },
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "installOhMyZsh": true,
+      "upgradePackages": true
+    },
+    "ghcr.io/devcontainers/features/git:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  
+  // Configure tool-specific properties
+  "customizations": {
+    "vscode": {
+      // Extensions to install automatically
+      "extensions": [
+        "ms-kubernetes-tools.vscode-kubernetes-tools",
+        "redhat.vscode-yaml",
+        "GitHub.copilot",
+        "GitHub.copilot-chat",
+        "ms-azuretools.vscode-docker",
+        "ms-vscode.makefile-tools",
+        "signageos.signageos-vscode-sops",
+        "eamodio.gitlens"
+      ],
+      // Settings for VS Code
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "files.eol": "\\n",
+        "editor.formatOnSave": true,
+        "yaml.schemas": {
+          "kubernetes": "*.yaml"
+        }
+      }
+    }
+  },
+  
+  // Forward ports for services
+  "forwardPorts": [8080, 9090, 3000],
+  
+  // Use 'postCreateCommand' to run commands after the container is created
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  
+  // Comment out to connect as root instead. More info: https://aka.ms/dev-containers-non-root
+  "remoteUser": "vscode",
+  
+  // Enable GitHub Copilot
+  "remoteEnv": {
+    "GITHUB_COPILOT_ENABLED": "true"
+  },
+  
+  // Mounts
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+  ]
+}
