@@ -1,0 +1,243 @@
+# Kubernetes Audit Logging Policy
+# Captures API server activity for forensic analysis
+# Place at: /etc/kubernetes/audit-policy.yaml
+# Reference in kube-apiserver: --audit-policy-file=/etc/kubernetes/audit-policy.yaml
+# Also enable: --audit-log-maxage=30 --audit-log-maxbackup=10 --audit-log-maxsize=100
+
+apiVersion: audit.k8s.io/v1
+kind: Policy
+
+# Log level definitions:
+# - None: do not log
+# - Metadata: log metadata (user, verb, timestamp) but not request/response body
+# - Request: log metadata + request body
+# - RequestResponse: log metadata + request + response bodies
+
+rules:
+
+  # ========== CRITICAL: Log all secret access ==========
+  - level: RequestResponse
+    omitStages:
+      - RequestReceived
+    resources:
+      - group: ""
+        resources: ["secrets"]
+    namespaces: ["*"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # ========== CRITICAL: Log RBAC changes ==========
+  - level: RequestResponse
+    omitStages:
+      - RequestReceived
+    verbs: ["create", "update", "patch", "delete"]
+    resources:
+      - group: "rbac.authorization.k8s.io"
+        resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
+
+  # ========== CRITICAL: Log pod creation/deletion ==========
+  - level: RequestResponse
+    omitStages:
+      - RequestReceived
+    verbs: ["create", "delete", "deletecollection"]
+    resources:
+      - group: ""
+        resources: ["pods"]
+
+  # ========== Log DaemonSet changes (privilege escalation vector) ==========
+  - level: RequestResponse
+    omitStages:
+      - RequestReceived
+    verbs: ["create", "update", "patch", "delete"]
+    resources:
+      - group: "apps"
+        resources: ["daemonsets"]
+
+  # ========== Log CronJob changes (persistence mechanism) ==========
+  - level: RequestResponse
+    omitStages:
+      - RequestReceived
+    verbs: ["create", "update", "patch", "delete"]
+    resources:
+      - group: "batch"
+        resources: ["cronjobs"]
+
+  # ========== Log event deletion (log tampering) ==========
+  - level: RequestResponse
+    omitStages:
+      - RequestReceived
+    verbs: ["delete", "deletecollection"]
+    resources:
+      - group: ""
+        resources: ["events"]
+
+  # ========== Log ConfigMap access ==========
+  - level: Request
+    omitStages:
+      - RequestReceived
+    verbs: ["get", "list", "watch"]
+    resources:
+      - group: ""
+        resources: ["configmaps"]
+
+  # ========== Log webhooks (admission control bypass) ==========
+  - level: RequestResponse
+    omitStages:
+      - RequestReceived
+    verbs: ["create", "update", "patch", "delete"]
+    resources:
+      - group: "admissionregistration.k8s.io"
+        resources:
+          - "mutatingwebhookconfigurations"
+          - "validatingwebhookconfigurations"
+
+  # ========== Log Service Account access ==========
+  - level: Request
+    verbs: ["get", "list"]
+    resources:
+      - group: ""
+        resources: ["serviceaccounts"]
+
+  # ========== Log pod exec (container access) ==========
+  - level: RequestResponse
+    omitStages:
+      - RequestReceived
+    verbs: ["create"]
+    resources:
+      - group: ""
+        resources: ["pods", "pods/exec", "pods/portforward"]
+
+  # ========== Log authentication events ==========
+  - level: Metadata
+    omitStages:
+      - RequestReceived
+    verbs:
+      - authenticate
+    nonResourceURLs:
+      - "/api*"
+      - "/openapi/*"
+
+  # ========== Log all namespace operations ==========
+  - level: Metadata
+    omitStages:
+      - RequestReceived
+    verbs: ["create", "delete"]
+    resources:
+      - group: ""
+        resources: ["namespaces"]
+
+  # ========== Log node modifications ==========
+  - level: Metadata
+    omitStages:
+      - RequestReceived
+    verbs: ["create", "update", "patch", "delete"]
+    resources:
+      - group: ""
+        resources: ["nodes"]
+
+  # ========== Log system extension creation ==========
+  - level: Metadata
+    omitStages:
+      - RequestReceived
+    verbs: ["create"]
+    resources:
+      - group: "apiextensions.k8s.io"
+        resources: ["customresourcedefinitions"]
+
+  # ========== Log all API requests at namespace level ==========
+  - level: Metadata
+    omitStages:
+      - RequestReceived
+
+# ========== IMPORTANT: Audit log configuration requirements ==========
+# In kube-apiserver manifest add these flags:
+#   --audit-policy-file=/etc/kubernetes/audit-policy.yaml
+#   --audit-log-maxage=30
+#   --audit-log-maxbackup=10
+#   --audit-log-maxsize=100
+#   --audit-log-path=/var/log/audit/audit.log
+#
+# To send audit logs to logsidecar/webhook:
+#   --audit-webhook-config-file=/etc/kubernetes/audit-webhook.yml
+#   --audit-webhook-initial-backoff=10s
+#
+# Example audit-webhook.yml:
+#   apiVersion: v1
+#   kind: Config
+#   clusters:
+#   - name: falco
+#     cluster:
+#       server: http://falco-sidecar:5555/post
+#   contexts:
+#   - context:
+#       cluster: falco
+#       user: ""
+#     name: default-context
+#   current-context: default-context
+#   preferences: {}
+#   users: []
+
+---
+# Recommended: Use Falco to capture audit logs
+# Deploy Falco with audit plugin to receive and analyze audit logs
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: audit-policy-readme
+  namespace: kube-system
+data:
+  README: |
+    Kubernetes Audit Policy Configuration Guide
+    
+    This audit policy logs critical operations for forensic analysis:
+    
+    CRITICAL (RequestResponse level):
+    - ALL secret access (GET, LIST, WATCH, CREATE, UPDATE, DELETE)
+    - RBAC changes (new roles, bindings)
+    - Pod creation/deletion
+    - DaemonSet changes (privilege escalation vector)
+    - CronJob changes (persistence mechanism)
+    - Event deletion (log tampering indicator)
+    - Webhook modifications (admission bypass)
+    
+    MEDIUM (Request level):
+    - ConfigMap access
+    - Service Account access
+    - Pod exec/portforward
+    
+    LOW (Metadata level):
+    - Namespace operations
+    - Node modifications
+    - CRD creation
+    - All other API requests
+    
+    Logs are written to: /var/log/audit/audit.log (on control plane)
+    
+    To analyze: See analyze-audit.sh in same directory
+    To replicate: Use audit webhook to send to Falco/Elasticsearch
+    
+    Format: JSON lines, one entry per request
+    
+    Example audit log entry:
+    {
+      "level":"RequestResponse",
+      "auditID":"abc123",
+      "stage":"ResponseComplete",
+      "requestTimestamp":"2024-01-15T10:30:45.123Z",
+      "user":{
+        "username":"attacker-pod",
+        "uid":"123",
+        "groups":["system:serviceaccounts:default"]
+      },
+      "sourceIPAddress":"10.0.1.5",
+      "verb":"create",
+      "objectRef":{
+        "apiVersion":"v1",
+        "kind":"Pod",
+        "namespace":"malicious-ns",
+        "name":"backdoor-pod"
+      },
+      "requestObject":{...},
+      "responseObject":{...},
+      "responseStatus":{"code":201}
+    }

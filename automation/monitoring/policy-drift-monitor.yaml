@@ -1,0 +1,132 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: policy-drift-config
+  namespace: monitoring
+data:
+  drift-rules.yaml: |
+    rules:
+      - name: "RBAC Drift Detection"
+        description: "Detect changes to RBAC resources not managed by GitOps"
+        resource: "rbac.authorization.k8s.io/*"
+        check:
+          - annotation_missing: "app.kubernetes.io/managed-by=flux"
+          - label_missing: "security-scenario"
+
+      - name: "NetworkPolicy Drift"
+        description: "Ensure network policies are not bypassed"
+        resource: "networking.k8s.io/NetworkPolicy"
+        check:
+          - spec_changed: "spec.podSelector"
+          - spec_changed: "spec.policyTypes"
+
+      - name: "Security Context Drift"
+        description: "Monitor security context changes"
+        resource: "apps/Deployment"
+        check:
+          - security_context_removed: "spec.template.spec.securityContext"
+          - privileged_enabled: "spec.template.spec.containers[*].securityContext.privileged"
+
+      - name: "Image Policy Drift"
+        description: "Detect unauthorized image usage"
+        resource: "apps/Deployment"
+        check:
+          - image_not_allowed: "spec.template.spec.containers[*].image"
+          - image_tag_latest: "spec.template.spec.containers[*].image"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: policy-drift-monitor
+  namespace: monitoring
+  labels:
+    app: policy-drift-monitor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: policy-drift-monitor
+  template:
+    metadata:
+      labels:
+        app: policy-drift-monitor
+    spec:
+      serviceAccountName: policy-monitor
+      containers:
+      - name: drift-monitor
+        image: bitnami/kubectl:latest
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          echo "📊 Policy Drift Monitor Starting..."
+          while true; do
+            echo "$(date): Checking for policy drift..."
+
+            # Check RBAC drift
+            kubectl get clusterrolebindings -o json | jq -r '.items[] | select(.metadata.annotations."app.kubernetes.io/managed-by" != "flux") | .metadata.name' > rbac-drift.log
+
+            # Check network policies
+            kubectl get networkpolicies --all-namespaces -o json | jq -r '.items[] | select(.spec.podSelector.matchLabels."security-scenario" == null) | .metadata.namespace + "/" + .metadata.name' > netpol-drift.log
+
+            # Check security contexts
+            kubectl get deployments --all-namespaces -o json | jq -r '.items[] | select(.spec.template.spec.securityContext == null) | .metadata.namespace + "/" + .metadata.name' > secctx-drift.log
+
+            # Alert if drift detected
+            if [ -s rbac-drift.log ] || [ -s netpol-drift.log ] || [ -s secctx-drift.log ]; then
+              echo "🚨 POLICY DRIFT DETECTED!"
+              echo "RBAC Drift:"; cat rbac-drift.log
+              echo "Network Policy Drift:"; cat netpol-drift.log
+              echo "Security Context Drift:"; cat secctx-drift.log
+
+              # Send alert (integrate with your alerting system)
+              curl -X POST -H 'Content-type: application/json' \
+                --data '{"text":"Policy drift detected in Kubernetes cluster"}' \
+                $SLACK_WEBHOOK_URL || true
+            fi
+
+            sleep 300  # Check every 5 minutes
+          done
+        volumeMounts:
+        - name: config
+          mountPath: /etc/drift-monitor
+      volumes:
+      - name: config
+        configMap:
+          name: policy-drift-config
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: policy-monitor
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: policy-drift-monitor
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps", "secrets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: policy-drift-monitor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: policy-drift-monitor
+subjects:
+- kind: ServiceAccount
+  name: policy-monitor
+  namespace: monitoring

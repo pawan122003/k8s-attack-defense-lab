@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ddos-simulator
+  labels:
+    performance-test: ddos-simulation
+spec:
+  replicas: 50  # High replica count for load testing
+  selector:
+    matchLabels:
+      app: ddos-simulator
+  template:
+    metadata:
+      labels:
+        app: ddos-simulator
+    spec:
+      containers:
+      - name: attacker
+        image: alpine:latest
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          apk add --no-cache curl siege
+          echo "Starting DDoS simulation against target services..."
+
+          # Simulate various attack patterns
+          while true; do
+            # API flooding
+            curl -s http://api-server-target.default.svc/api/v1/pods &
+            curl -s http://api-server-target.default.svc/api/v1/services &
+
+            # Service mesh stress
+            curl -s http://frontend.default.svc/stress-endpoint &
+
+            # Database connection exhaustion
+            curl -s http://database.default.svc/connect &
+
+            # Wait and repeat
+            sleep 0.1
+          done
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+      restartPolicy: Always

@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scenario-marketplace
+  namespace: community
+  labels:
+    app: scenario-marketplace
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: scenario-marketplace
+  template:
+    metadata:
+      labels:
+        app: scenario-marketplace
+    spec:
+      containers:
+      - name: marketplace-api
+        image: node:18-alpine
+        ports:
+        - containerPort: 3000
+        env:
+        - name: NODE_ENV
+          value: production
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: marketplace-db
+              key: connection-string
+        volumeMounts:
+        - name: marketplace-code
+          mountPath: /app
+        command: ["node", "server.js"]
+      volumes:
+      - name: marketplace-code
+        configMap:
+          name: marketplace-code
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scenario-marketplace
+  namespace: community
+spec:
+  selector:
+    app: scenario-marketplace
+  ports:
+  - port: 80
+    targetPort: 3000
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: marketplace-ingress
+  namespace: community
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - host: marketplace.k8s-lab.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: scenario-marketplace
+            port:
+              number: 80

@@ -1,0 +1,38 @@
+groups:
+  - name: kubernetes-security
+    rules:
+      - alert: KubernetesPodSecurityViolation
+        expr: kube_pod_container_info{container="security-violator"} > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Security violation detected"
+          description: "Pod {{ $labels.pod }} has security violations"
+
+      - alert: KubernetesApiServerHighRequestRate
+        expr: rate(apiserver_request_total[5m]) > 100
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API server request rate"
+          description: "API server experiencing high request volume"
+
+      - alert: KubernetesNodeUnderAttack
+        expr: increase(node_network_receive_packets_total[5m]) > 100000
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Potential DDoS attack on node"
+          description: "Node {{ $labels.instance }} receiving excessive traffic"
+
+      - alert: KubernetesSecretAccessAnomaly
+        expr: increase(kube_secret_info[1h]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unusual secret access pattern"
+          description: "High volume of secret operations detected"

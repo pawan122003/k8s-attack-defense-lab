@@ -1,0 +1,212 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alert-config
+  namespace: security-remediation
+data:
+  alert-rules.yaml: |
+    # Incident escalation rules
+    rules:
+      - name: "high-severity-attack"
+        severity: "high"
+        conditions:
+          - label: "security.kubernetes.io/quarantined=true"
+          - annotation: "security.kubernetes.io/attack-type"
+        actions:
+          - slack: "#security-incidents"
+          - email: "security-team@company.com"
+          - pager: "security-oncall@company.com"
+
+      - name: "privilege-escalation"
+        severity: "critical"
+        conditions:
+          - event: "falco_privilege_escalation"
+        actions:
+          - slack: "#security-incidents"
+          - pager: "security-oncall@company.com"
+          - webhook: "https://security-dashboard.company.com/alert"
+
+      - name: "data-exfiltration"
+        severity: "high"
+        conditions:
+          - event: "falco_data_exfil"
+        actions:
+          - slack: "#security-incidents"
+          - email: "security-team@company.com"
+
+    channels:
+      slack:
+        webhook_url: "${SLACK_WEBHOOK_URL}"
+        channel: "#security-incidents"
+        username: "K8s Security Alert"
+        icon_emoji: ":warning:"
+
+      email:
+        smtp_server: "smtp.company.com"
+        smtp_port: "587"
+        from: "alerts@company.com"
+        to: ["security-team@company.com"]
+
+      pager:
+        webhook_url: "https://api.pagerduty.com/v2/enqueue"
+        routing_key: "${PAGERDUTY_ROUTING_KEY}"
+
+  templates:
+    slack_template: |
+      {
+        "text": "*SECURITY ALERT* - {{.severity|upper}}",
+        "attachments": [
+          {
+            "color": "{{if eq .severity \"critical\"}}danger{{else if eq .severity \"high\"}}warning{{else}}good{{end}}",
+            "fields": [
+              {
+                "title": "Alert Type",
+                "value": "{{.alert_type}}",
+                "short": true
+              },
+              {
+                "title": "Namespace",
+                "value": "{{.namespace}}",
+                "short": true
+              },
+              {
+                "title": "Pod",
+                "value": "{{.pod}}",
+                "short": true
+              },
+              {
+                "title": "Timestamp",
+                "value": "{{.timestamp}}",
+                "short": true
+              },
+              {
+                "title": "Description",
+                "value": "{{.description}}",
+                "short": false
+              }
+            ]
+          }
+        ]
+      }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alert-manager
+  namespace: security-remediation
+  labels:
+    app: alert-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alert-manager
+  template:
+    metadata:
+      labels:
+        app: alert-manager
+    spec:
+      serviceAccountName: remediation-webhook-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+      - name: alert-processor
+        image: curlimages/curl:8.00.1
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+        command:
+        - /bin/sh
+        - -c
+        - |
+          #!/bin/sh
+          echo "Alert manager started"
+
+          # Watch for security events and process alerts
+          kubectl get events --all-namespaces --field-selector reason=SecurityAlert \
+            --watch-only -o json | \
+          while read -r event; do
+            echo "Processing security alert: $event"
+
+            # Extract event details
+            namespace=$(echo "$event" | jq -r '.object.metadata.namespace // "unknown"')
+            pod=$(echo "$event" | jq -r '.object.involvedObject.name // "unknown"')
+            message=$(echo "$event" | jq -r '.object.message // "No message"')
+            timestamp=$(echo "$event" | jq -r '.object.metadata.creationTimestamp // "unknown"')
+
+            # Determine severity and alert type
+            if echo "$message" | grep -qi "privilege.*escalation\|root\|cluster.*admin"; then
+              severity="critical"
+              alert_type="privilege-escalation"
+            elif echo "$message" | grep -qi "secret\|exfil\|data.*leak"; then
+              severity="high"
+              alert_type="data-exfiltration"
+            else
+              severity="medium"
+              alert_type="security-event"
+            fi
+
+            # Send Slack alert (if webhook configured)
+            if [ -n "$SLACK_WEBHOOK_URL" ]; then
+              curl -X POST -H 'Content-type: application/json' \
+                --data "{\"text\":\"*SECURITY ALERT* - ${severity^^}\",\"attachments\":[{\"color\":\"${severity}\",\"fields\":[{\"title\":\"Type\",\"value\":\"${alert_type}\",\"short\":true},{\"title\":\"Namespace\",\"value\":\"${namespace}\",\"short\":true},{\"title\":\"Pod\",\"value\":\"${pod}\",\"short\":true},{\"title\":\"Message\",\"value\":\"${message}\",\"short\":false}]}]}" \
+                "$SLACK_WEBHOOK_URL" 2>/dev/null || echo "Slack alert failed"
+            fi
+
+            # Log alert processing
+            echo "Alert processed: $severity $alert_type for $namespace/$pod"
+          done
+        env:
+        - name: SLACK_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: alert-secrets
+              key: slack-webhook-url
+              optional: true
+      - name: alert-watcher
+        image: busybox:1.35
+        command:
+        - /bin/sh
+        - -c
+        - |
+          #!/bin/sh
+          echo "Alert watcher started"
+
+          # Watch for quarantined pods and create security events
+          while true; do
+            kubectl get pods --all-namespaces -l security.kubernetes.io/quarantined=true \
+              -o jsonpath='{range .items[*]}{.metadata.namespace}{","}{.metadata.name}{","}{.metadata.annotations.security\.kubernetes\.io/quarantine-reason}{"\n"}{end}' | \
+            while IFS=',' read -r ns pod reason; do
+              # Check if we already alerted for this pod
+              if ! kubectl get events -n "$ns" --field-selector reason=SecurityAlert,involvedObject.name="$pod" -o name | grep -q .; then
+                echo "Creating security alert for quarantined pod: $ns/$pod"
+
+                # Create Kubernetes event for the alert
+                kubectl create event --namespace "$ns" \
+                  --involved-object-kind Pod \
+                  --involved-object-name "$pod" \
+                  security-alert \
+                  --reason SecurityAlert \
+                  --message "Pod quarantined due to security incident: $reason" \
+                  --type Warning
+              fi
+            done
+
+            sleep 15  # Check every 15 seconds
+          done
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alert-secrets
+  namespace: security-remediation
+type: Opaque
+data:
+  # Placeholder - configure with real webhook URLs
+  slack-webhook-url: ""  # base64 encoded webhook URL
+  pagerduty-routing-key: ""  # base64 encoded routing key

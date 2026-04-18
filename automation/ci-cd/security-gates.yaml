@@ -1,0 +1,113 @@
+# GitHub Actions Security Gates
+name: Security Gates
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Run kubeconform validation
+        uses: yannh/kubeconform-action@v0.6.7
+        with:
+          manifests: 'cluster/ defenses/ monitors/'
+          strict: true
+
+      - name: Run kubescape security scan
+        uses: kubescape/github-action@main
+        with:
+          format: sarif
+          outputFile: 'kubescape-results.sarif'
+
+      - name: Upload Kubescape results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'kubescape-results.sarif'
+
+  policy-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Kyverno CLI
+        run: |
+          curl -LO https://github.com/kyverno/kyverno/releases/latest/download/kyverno-cli_linux_x86_64.tar.gz
+          tar -xzf kyverno-cli_linux_x86_64.tar.gz
+          sudo mv kyverno /usr/local/bin/
+
+      - name: Validate policies
+        run: |
+          kyverno validate policies/kyverno/
+          kyverno validate policies/opa/
+
+  dependency-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SBOM generation
+        uses: anchore/sbom-action@v0.14.3
+        with:
+          path: '.'
+          format: 'spdx-json'
+          output-file: './sbom.spdx.json'
+
+      - name: Run dependency check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'k8s-attack-defense-lab'
+          path: '.'
+          format: 'ALL'
+
+  secrets-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run TruffleHog secrets scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          head: HEAD
+          extra_args: --debug --only-verified
+
+  compliance-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Open Policy Agent conftest
+        uses: open-policy-agent/conftest-action@v0.0.1
+        with:
+          policy: policies/opa/
+          data: cluster/ defenses/
+          output: cli

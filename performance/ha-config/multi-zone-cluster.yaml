@@ -1,0 +1,69 @@
+# Multi-zone Kubernetes cluster configuration for Kind
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  # Control plane nodes (3 for HA)
+  - role: control-plane
+    kubeadmConfigPatches:
+    - |
+      kind: InitConfiguration
+      nodeRegistration:
+        kubeletExtraArgs:
+          node-labels: "topology.kubernetes.io/zone=us-east-1a"
+    extraPortMappings:
+    - containerPort: 6443
+      hostPort: 6443
+      protocol: TCP
+  - role: control-plane
+    kubeadmConfigPatches:
+    - |
+      kind: JoinConfiguration
+      nodeRegistration:
+        kubeletExtraArgs:
+          node-labels: "topology.kubernetes.io/zone=us-east-1b"
+  - role: control-plane
+    kubeadmConfigPatches:
+    - |
+      kind: JoinConfiguration
+      nodeRegistration:
+        kubeletExtraArgs:
+          node-labels: "topology.kubernetes.io/zone=us-east-1c"
+
+  # Worker nodes across zones
+  - role: worker
+    kubeadmConfigPatches:
+    - |
+      kind: JoinConfiguration
+      nodeRegistration:
+        kubeletExtraArgs:
+          node-labels: "topology.kubernetes.io/zone=us-east-1a"
+  - role: worker
+    kubeadmConfigPatches:
+    - |
+      kind: JoinConfiguration
+      nodeRegistration:
+        kubeletExtraArgs:
+          node-labels: "topology.kubernetes.io/zone=us-east-1b"
+  - role: worker
+    kubeadmConfigPatches:
+    - |
+      kind: JoinConfiguration
+      nodeRegistration:
+        kubeletExtraArgs:
+          node-labels: "topology.kubernetes.io/zone=us-east-1c"
+
+  # Dedicated monitoring nodes
+  - role: worker
+    kubeadmConfigPatches:
+    - |
+      kind: JoinConfiguration
+      nodeRegistration:
+        kubeletExtraArgs:
+          node-labels: "node-type=monitoring,topology.kubernetes.io/zone=us-east-1a"
+  - role: worker
+    kubeadmConfigPatches:
+    - |
+      kind: JoinConfiguration
+      nodeRegistration:
+        kubeletExtraArgs:
+          node-labels: "node-type=monitoring,topology.kubernetes.io/zone=us-east-1b"

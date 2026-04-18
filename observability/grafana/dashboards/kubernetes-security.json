@@ -1,0 +1,49 @@
+{
+  "dashboard": {
+    "title": "Kubernetes Security Overview",
+    "tags": ["kubernetes", "security"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "title": "Security Alerts",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "ALERTS{alertstate=\"firing\"}",
+            "legendFormat": "{{ alertname }}"
+          }
+        ]
+      },
+      {
+        "title": "Falco Events by Severity",
+        "type": "barchart",
+        "targets": [
+          {
+            "expr": "falco_events_total",
+            "legendFormat": "{{ priority }}"
+          }
+        ]
+      },
+      {
+        "title": "API Server Request Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(apiserver_request_total[5m])",
+            "legendFormat": "Requests/sec"
+          }
+        ]
+      },
+      {
+        "title": "Pod Security Violations",
+        "type": "table",
+        "targets": [
+          {
+            "expr": "kube_pod_security_violations",
+            "legendFormat": "{{ pod }}"
+          }
+        ]
+      }
+    ]
+  }
+}

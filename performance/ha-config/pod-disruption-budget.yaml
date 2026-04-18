@@ -1,0 +1,43 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: falco-pdb
+  namespace: falco
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: falco
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kyverno-pdb
+  namespace: kyverno
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kyverno
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: prometheus-pdb
+  namespace: monitoring
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: prometheus
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: etcd-pdb
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      component: etcd
+      tier: control-plane

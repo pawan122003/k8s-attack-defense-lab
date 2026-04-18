@@ -1,0 +1,474 @@
+# Advanced Falco Rules for Kubernetes Attack Detection
+# Rules covering: API abuse, file access, network anomalies, privilege escalation, persistence indicators
+# These rules are designed to detect the attack scenarios implemented in this lab
+
+rules:
+
+# ============================================================================
+# API SERVER ABUSE DETECTION (9 rules)
+# ============================================================================
+
+- rule: Excessive API Secret Access
+  desc: Detect excessive GET/LIST requests to /secrets endpoint
+  condition: >
+    k8s_audit and
+    ka.verb in (get, list, watch) and
+    ka.target.resource = "secrets" and
+    ka.user.name not in (kubelet, system:pods, system:masters) and
+    container
+  output: >
+    Excessive secret access detected
+    (user=%ka.user.name verb=%ka.verb resource=%ka.target.resource
+     namespace=%ka.target.namespace pod=%container_name)
+  priority: WARNING
+
+- rule: ListWatch Secrets by Non-System
+  desc: Non-system pod attempting to list/watch all secrets in namespace
+  condition: >
+    k8s_audit and
+    ka.verb = "list" and
+    ka.target.resource = "secrets" and
+    ka.requestObject contains "fieldSelector" = false and
+    not ka.user.name in (system:kube-scheduler, system:kube-proxy) and
+    container
+  output: >
+    Suspicious secrets list by non-system user
+    (user=%ka.user.name namespace=%ka.target.namespace pod=%container_name)
+  priority: HIGH
+
+- rule: API Token Used Outside Pod Context
+  desc: Service account token used from external IP/context
+  condition: >
+    k8s_audit and
+    ka.user.name contains "system:serviceaccount" and
+    ka.sourceip != container_network_ip and
+    ka.sourceip != "::1" and
+    ka.sourceip != "127.0.0.1"
+  output: >
+    Service account token used from unexpected location
+    (token=%ka.user.name sourceip=%ka.sourceip expected=%container_network_ip)
+  priority: CRITICAL
+
+- rule: ClusterRole Creation by Non-Admin
+  desc: Non-admin user creating ClusterRole (privilege escalation)
+  condition: >
+    k8s_audit and
+    ka.verb = "create" and
+    ka.target.resource = "clusterroles" and
+    not ka.user.name in (admin, system:masters)
+  output: >
+    Non-admin creating ClusterRole (privilege escalation attempt)
+    (user=%ka.user.name role=%ka.requestObject[name])
+  priority: CRITICAL
+
+- rule: ClusterRoleBinding Created to Self
+  desc: User creating ClusterRoleBinding binding self to admin role
+  condition: >
+    k8s_audit and
+    ka.verb = "create" and
+    ka.target.resource = "clusterrolebindings" and
+    ka.requestObject[roleRef.name] in (cluster-admin, admin) and
+    ka.requestObject[subjects.name] = ka.user.name
+  output: >
+    User escalating own privileges to cluster-admin
+    (user=%ka.user.name binding=%ka.requestObject[name])
+  priority: CRITICAL
+
+- rule: Excessive API Server Watch Connections
+  desc: Multiple watch connections from same client exhausting API server connections
+  condition: >
+    k8s_audit and
+    ka.verb = "watch" and
+    evt.count > 50 in 60s
+  output: >
+    Excessive watch connections from single IP (possible DoS)
+    (source_ip=%ka.sourceIPs[0] count=%evt.count user=%ka.user.name)
+  priority: HIGH
+
+- rule: Excessive Resource Requests
+  desc: Pod requesting resources far exceeding typical application needs
+  condition: >
+    k8s_audit and
+    ka.verb = "create" and
+    ka.target.resource = "pods" and
+    (ka.requestObject[spec.containers[*].resources.requests.memory] > "500Gi" or
+     ka.requestObject[spec.containers[*].resources.requests.cpu] > "100")
+  output: >
+    Pod requesting excessive resources (possible resource starvation attack)
+    (namespace=%ka.target.namespace pod=%ka.requestObject[metadata.name]
+     memory=%ka.requestObject[spec.containers[*].resources.requests.memory]
+     cpu=%ka.requestObject[spec.containers[*].resources.requests.cpu])
+  priority: HIGH
+
+- rule: High Rate DNS Queries
+  desc: Pod generating excessive DNS queries overwhelming CoreDNS
+  condition: >
+    spawned_process and
+    container and
+    (proc.name = "dig" or proc.name = "nslookup" or proc.name = "drill") and
+    evt.count > 100 in 30s
+  output: >
+    High rate DNS queries from pod (possible DNS amplification attack)
+    (pod=%container_name command=%proc.cmdline count=%evt.count)
+  priority: HIGH
+
+- rule: Disk Space Exhaustion Attempt
+  desc: Process rapidly consuming disk space or filling inodes
+  condition: >
+    spawned_process and
+    container and
+    (proc.cmdline contains "dd if=/dev/zero" or
+     proc.cmdline contains "fallocate" or
+     proc.cmdline contains "truncate" or
+     (proc.cmdline contains "touch" and evt.count > 1000 in 10s))
+  output: >
+    Potential disk exhaustion attack detected
+    (pod=%container_name command=%proc.cmdline count=%evt.count)
+  priority: CRITICAL
+
+# ============================================================================
+# FILE ACCESS ANOMALIES (4 rules)
+# ============================================================================
+
+- rule: Read Sensitive Files
+  desc: Detect reads of sensitive files like /etc/shadow, /etc/passwd
+  condition: >
+    open and
+    container and
+    fd.name in (/etc/shadow, /etc/passwd, /root/.ssh/id_rsa, /root/.kube/config) and
+    proc.user.name != "root"
+  output: >
+    Non-root process reading sensitive file
+    (file=%fd.name process=%proc.name user=%proc.user.name container=%container_name)
+  priority: HIGH
+
+- rule: Access Service Account Token
+  desc: Container reading service account token file
+  condition: >
+    open and
+    container and
+    fd.name = "/var/run/secrets/kubernetes.io/serviceaccount/token" and
+    proc.name != "kubelet" and
+    proc.name != "pause"
+  output: >
+    Container reading service account token
+    (container=%container_name process=%proc.name)
+  priority: HIGH
+
+- rule: Write to CNI Configuration
+  desc: Process writing to CNI plugin configuration
+  condition: >
+    open and
+    (fd.name startswith "/etc/cni/" or fd.name startswith "/opt/cni/")  and
+    flags.open contains "O_WRONLY" or flags.open contains "O_RDWR"
+  output: >
+    Modification attempt to CNI configuration
+    (file=%fd.name process=%proc.name user=%proc.user.name)
+  priority: CRITICAL
+
+- rule: Execute kubectl from Container
+  desc: Container spawning kubectl binary
+  condition: >
+    spawned_process and
+    container and
+    proc.name = "kubectl"
+  output: >
+    kubectl execution from container
+    (container=%container_name command=%proc.cmdline)
+  priority: MEDIUM
+
+# ============================================================================
+# NETWORK ANOMALIES (4-5 rules)
+# ============================================================================
+
+- rule: Pod Connection to Kubelet API
+  desc: Pod connecting to Kubelet API port (10250)
+  condition: >
+    outbound and
+    container and
+    fd.lport = 10250 and
+    container_network_ip != "127.0.0.1"
+  output: >
+    Pod connecting to Kubelet API
+    (pod=%container_name ip=%container_network_ip target_port=10250)
+  priority: HIGH
+
+- rule: Pod Connection to etcd Port
+  desc: Non-control-plane pod connecting to etcd (2379)
+  condition: >
+    outbound and
+    container and
+    fd.lport = 2379 and
+    not container_name in (etcd, kubernetes)
+  output: >
+    Suspicious connection to etcd port
+    (pod=%container_name target=etcd:2379)
+  priority: CRITICAL
+
+- rule: Unexpected Outbound Connection
+  desc: Pod making connection to non-standard external IP
+  condition: >
+    outbound and
+    container and
+    not fd.lip in (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) and
+    not fd.rip in (trusted_external_ips_here)
+  output: >
+    Pod connecting to unexpected external IP
+    (pod=%container_name destination=%fd.rip port=%fd.rport)
+  priority: MEDIUM
+
+- rule: DNS Query to Suspicious Domain
+  desc: Detect DNS queries with characteristics of DGA or C2
+  condition: >
+    outbound and
+    container and
+    fd.lport = 53 and
+    (dns_query contains "xn--" or 
+     dns_query matches "(^[a-z0-9]{16,}\.)" or
+     dns_query endswith ".onion")
+  output: >
+    Suspicious DNS query pattern detected
+    (pod=%container_name query=%dns_query)
+  priority: HIGH
+
+- rule: SSH Connection from Container
+  desc: Container establishing SSH connection to external host
+  condition: >
+    outbound and
+    container and
+    fd.rport = 22 and
+    proc.name in (ssh, sshpass, socat)
+  output: >
+    SSH connection from container (potential reverse shell)
+    (pod=%container_name target=%fd.rip command=%proc.cmdline)
+  priority: CRITICAL
+
+# ============================================================================
+# PRIVILEGE ESCALATION DETECTION (3 rules)
+# ============================================================================
+
+- rule: Privileged Container Creation
+  desc: Pod creation with privileged: true
+  condition: >
+    k8s_audit and
+    ka.verb = "create" and
+    ka.target.resource = "pods" and
+    ka.requestObject[spec.containers[*].securityContext.privileged] = true
+  output: >
+    Privileged container created
+    (namespace=%ka.target.namespace pod=%ka.requestObject[metadata.name]
+     user=%ka.user.name)
+  priority: HIGH
+
+- rule: Dangerous Capabilities Added
+  desc: Container being granted SYS_ADMIN or other dangerous capabilities
+  condition: >
+    k8s_audit and
+    ka.verb = "create" and
+    ka.target.resource = "pods" and
+    (ka.requestObject[spec.containers[*].securityContext.capabilities.add] contains "SYS_ADMIN" or
+     ka.requestObject[spec.containers[*].securityContext.capabilities.add] contains "CAP_SYS_PTRACE")
+  output: >
+    Dangerous capability granted to container
+    (namespace=%ka.target.namespace pod=%ka.requestObject[metadata.name]
+     capabilities=%ka.requestObject[spec.containers[*].securityContext.capabilities.add])
+  priority: HIGH
+
+- rule: HostPath Volume Mount
+  desc: Pod mounting host filesystem via hostPath
+  condition: >
+    k8s_audit and
+    ka.verb = "create" and
+    ka.target.resource = "pods" and
+    ka.requestObject[spec.volumes[*].hostPath] exists
+  output: >
+    Pod created with hostPath volume mount
+    (namespace=%ka.target.namespace pod=%ka.requestObject[metadata.name]
+     path=%ka.requestObject[spec.volumes[*].hostPath.path])
+  priority: HIGH
+
+# ============================================================================
+# PERSISTENCE INDICATORS (2-3 rules)
+# ============================================================================
+
+- rule: CronJob Created Outside System Namespace
+  desc: CronJob creation in non-system namespace
+  condition: >
+    k8s_audit and
+    ka.verb = "create" and
+    ka.target.resource = "cronjobs" and
+    ka.target.namespace not in (kube-system, kube-public)
+  output: >
+    CronJob created in non-system namespace
+    (namespace=%ka.target.namespace cronjob=%ka.requestObject[metadata.name]
+     schedule=%ka.requestObject[spec.schedule])
+  priority: MEDIUM
+
+- rule: Library Injection Attempt
+  desc: Process using LD_PRELOAD environment variable
+  condition: >
+    spawned_process and
+    container and
+    (proc.env contains "LD_PRELOAD=" or
+     proc.env contains "LD_LIBRARY_PATH=/tmp")
+  output: >
+    Library injection attempt via LD_PRELOAD
+    (container=%container_name process=%proc.name env=%proc.env)
+  priority: HIGH
+
+- rule: Rootkit Detection Pattern
+  desc: Suspicious process spawning shell with network redirect
+  condition: >
+    spawned_process and
+    container and
+    proc.name in (bash, sh, dash) and
+    proc.cmdline contains "/dev/tcp" and
+    proc.cmdline contains "2>&1"
+  output: >
+    Reverse shell indicator detected
+    (container=%container_name command=%proc.cmdline user=%proc.user.name)
+  priority: CRITICAL
+
+# ============================================================================
+# IMAGE & CONTAINER SECURITY (2 rules)
+# ============================================================================
+
+- rule: Pull from Non-Standard Registry
+  desc: Image pull from non-standard/private registry
+  condition: >
+    k8s_audit and
+    ka.verb = "create" and
+    ka.target.resource = "pods" and
+    ka.requestObject[spec.containers[*].image] not regex "^(docker.io|gcr.io|registry.k8s.io|quay.io)/"
+  output: >
+    Pod pulling from non-standard registry
+    (namespace=%ka.target.namespace image=%ka.requestObject[spec.containers[*].image])
+  priority: MEDIUM
+
+- rule: Container Image Tag Instead of Digest
+  desc: Pod deployment using image tag instead of digest
+  condition: >
+    k8s_audit and
+    ka.verb = "create" and
+    ka.target.resource = "pods" and
+    not ka.requestObject[spec.containers[*].image] regex "@sha256:"
+  output: >
+    Pod deployed with image tag (not digest)
+    (namespace=%ka.target.namespace image=%ka.requestObject[spec.containers[*].image])
+  priority: MEDIUM
+
+# ============================================================================
+# DaemonSet & System Resource Abuse (2 rules)
+# ============================================================================
+
+- rule: Privileged DaemonSet Creation
+  desc: DaemonSet with privileged containers outside system namespaces
+  condition: >
+    k8s_audit and
+    ka.verb = "create" and
+    ka.target.resource = "daemonsets" and
+    ka.target.namespace not in (kube-system, kube-public) and
+    ka.requestObject[spec.template.spec.containers[*].securityContext.privileged] = true
+  output: >
+    Privileged DaemonSet created in non-system namespace
+    (namespace=%ka.target.namespace daemonset=%ka.requestObject[metadata.name])
+  priority: CRITICAL
+
+- rule: DaemonSet with Host Networking
+  desc: DaemonSet granted hostNetwork access
+  condition: >
+    k8s_audit and
+    ka.verb = "create" and
+    ka.target.resource = "daemonsets" and
+    ka.requestObject[spec.template.spec.hostNetwork] = true
+  output: >
+    DaemonSet created with hostNetwork: true
+    (namespace=%ka.target.namespace daemonset=%ka.requestObject[metadata.name])
+  priority: HIGH
+
+# ============================================================================
+# RBAC ABUSE (2 rules)
+# ============================================================================
+
+- rule: ServiceAccount Token Mounted into Pod
+  desc: Pod with service account token in env/mounted
+  condition: >
+    k8s_audit and
+    ka.verb = "create" and
+    ka.target.resource = "pods" and
+    ka.requestObject[spec.serviceAccountName] exists and
+    ka.requestObject[spec.automountServiceAccountToken] != false
+  output: >
+    Pod automatically mounting service account token
+    (namespace=%ka.target.namespace pod=%ka.requestObject[metadata.name]
+     serviceaccount=%ka.requestObject[spec.serviceAccountName])
+  priority: MEDIUM
+
+- rule: Get Secrets via API
+  desc: API request to read secrets
+  condition: >
+    k8s_audit and
+    ka.verb = "get" and
+    ka.target.resource = "secrets" and
+    ka.user.name contains "pod" and
+    not ka.user.name in (system:kube-system)
+  output: >
+    Pod service account reading secret
+    (namespace=%ka.target.namespace secret=%ka.target.name
+     user=%ka.user.name)
+  priority: MEDIUM
+
+# ============================================================================
+# AUDIT LOG TAMPERING DETECTION (2 rules)
+# ============================================================================
+
+- rule: Events Deleted in Rapid Succession
+  desc: Multiple event deletion API calls in short timeframe
+  condition: >
+    k8s_audit and
+    ka.verb = "delete" and
+    ka.target.resource = "events" and
+    count > 10 within 60s
+  output: >
+    Rapid deletion of events (possible log tampering)
+    (user=%ka.user.name count=%count)
+  priority: HIGH
+
+- rule: Audit Log File Access
+  desc: Process accessing Kubernetes audit log file
+  condition: >
+    open and
+    (fd.name = "/var/log/audit/audit.log" or
+     fd.name contains "/var/log/pods/kube-system/") and
+    (flags.open contains "O_WRONLY" or flags.open contains "O_RDWR")
+  output: >
+    Audit log file access attempt
+    (process=%proc.name file=%fd.name user=%proc.user.name)
+  priority: CRITICAL
+
+# ============================================================================
+# RULE EXCEPTIONS (Whitelist for non-attacks)
+# ============================================================================
+
+- rule: Sensitive Read Allowed
+  desc: Exception for legitimate sensitive file reads
+  condition: >
+    open and
+    fd.name in (/etc/shadow, /etc/passwd) and
+    proc.user.name = "root"
+  output: >
+    Legitimate root access to sensitive file
+    (skip)
+  priority: DEBUG
+
+- rule: Kubelet Socket Access
+  desc: Kubelet legitimately accessing container sockets
+  condition: >
+    open and
+    proc.name = "kubelet" and
+    (fd.name contains "/var/run/docker.sock" or
+     fd.name contains "/var/run/containerd/containerd.sock")
+  output: >
+    Container runtime socket access (skip)
+    (skip)
+  priority: DEBUG

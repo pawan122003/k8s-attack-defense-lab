@@ -1,0 +1,258 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tag-confusion-attack
+---
+# Supply Chain Attack #3: Container Image Tag Confusion
+# Description: Exploits the mutability of container image tags in registries.
+# This scenario demonstrates:
+# - Pushing legitimate image to registry with tag "app:v1.0"
+# - Later pushing different/malicious image to SAME tag
+# - How platforms cache or pull wrong image version
+# - Tag immutability policy bypass
+# - Confusion between image tag (mutable) and digest (immutable)
+#
+# Detection Points:
+# - Image digest mismatch (tag resolves to different SHA)
+# - Image pull from unexpected registry mirror
+# - Image content hash verification failures
+# - Pod using tag instead of digest
+# - Image policy violations (requires digest instead of tag)
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tag-confusion-analysis
+  namespace: tag-confusion-attack
+data:
+  legitimate-build: |
+    Image: app:v1.0
+    Digest: sha256:abc123def456...
+    Build: Clean nginx application
+    Pushed: 2024-01-15 10:00:00 UTC
+    
+  malicious-rebuild: |
+    Image: app:v1.0
+    Digest: sha256:xyz789uvw456...
+    Build: Same tag, different code (malware)
+    Pushed: 2024-01-15 14:30:00 UTC (Attacker compromised registry)
+    
+  attack-timeline: |
+    1. Developer builds app:v1.0 (digest: abc123...) - CLEAN
+    2. Image deployed via tag "v1.0" in production
+    3. Attacker compromises registry credentials
+    4. Attacker builds malicious app:v1.0 (digest: xyz789...) - MALWARE
+    5. Attacker pushes to same tag
+    6. Image cache expires or pod restart occurs
+    7. New pod pulls "app:v1.0" - gets malicious version
+    8. Cluster compromised from "legitimate" tag
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tag-confusion-victim
+  namespace: tag-confusion-attack
+  labels:
+    app: app
+    version: v1.0
+    attack-type: supply-chain
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: app
+      version: v1.0
+  template:
+    metadata:
+      labels:
+        app: app
+        version: v1.0
+      annotations:
+        image-deployment-method: "by-tag"
+        vulnerability: "tag-confusion"
+    spec:
+      serviceAccountName: app-sa
+      containers:
+      - name: app
+        # This uses a tag (mutable) instead of digest (immutable)
+        # VULNERABLE: Later pushes to this tag could be malicious
+        image: nginx:latest
+        imagePullPolicy: Always  # Always re-pulls, checking for new tag
+        ports:
+        - containerPort: 80
+        env:
+        - name: DEPLOYMENT_METHOD
+          value: "tag-based"
+        - name: IMAGE_TAG
+          value: "v1.0"
+        - name: VULNERABLE_TO
+          value: "tag-confusion-attack"
+        lifecycle:
+          postStart:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - |
+                echo "[*] Deployed from image tag: nginx:latest"
+                echo "[*] Image digest: $(echo 'sha256:...' | base64)"
+                echo "[*] Container started successfully"
+                echo "[!] If tag was maliciously updated, this could be backdoored"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tag-confusion-secure
+  namespace: tag-confusion-attack
+  labels:
+    app: app-secure
+    version: v1.0
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app-secure
+      version: v1.0
+  template:
+    metadata:
+      labels:
+        app: app-secure
+        version: v1.0
+      annotations:
+        image-deployment-method: "by-digest"
+        defense: "tag-immutability"
+    spec:
+      serviceAccountName: app-sa
+      containers:
+      - name: app
+        # SECURE: Uses full digest instead of tag
+        # Even if tag is re-pushed with malware, this deployment is immune
+        image: nginx@sha256:4d8e42e7652fddb1380cef1346fec3d77f4bf995de2f28fbb74a9e951c15fa73
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+        env:
+        - name: DEPLOYMENT_METHOD
+          value: "digest-based"
+        - name: IMAGE_DIGEST
+          value: "sha256:4d8e42e7652fddb1380cef1346fec3d77f4bf995de2f28fbb74a9e951c15fa73"
+        - name: PROTECTED_FROM
+          value: "tag-confusion-attack"
+        lifecycle:
+          postStart:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - |
+                echo "[*] Deployed from image digest (immutable)"
+                echo "[*] Image digest pinned at build time"
+                echo "[+] Protected from tag confusion attacks"
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-sa
+  namespace: tag-confusion-attack
+
+---
+# Policy: Require image digest instead of tag
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: image-validation-policy
+  namespace: tag-confusion-attack
+data:
+  validate-image-digest.rego: |
+    package kubernetes.admission
+    
+    deny[msg] {
+        input.request.kind.kind == "Pod"
+        container := input.request.object.spec.containers[_]
+        # Image must use digest format (contains @sha256:)
+        not contains(container.image, "@sha256:")
+        msg := sprintf("Image must use digest format, not tag: %v", [container.image])
+    }
+    
+    contains(str, substr) {
+        _ = indexof(str, substr)
+    }
+
+---
+# Simulated registry service showing tag mutation
+apiVersion: v1
+kind: Pod
+metadata:
+  name: registry-simulator
+  namespace: tag-confusion-attack
+  labels:
+    tool: registry-sim
+spec:
+  serviceAccountName: registry-sa
+  containers:
+  - name: registry
+    image: registry:2
+    command:
+    - sh
+    - -c
+    - |
+      echo "=== Image Registry Simulator ==="
+      echo ""
+      echo "[2024-01-15 10:00] Push: app:v1.0 -> sha256:abc123def456"
+      echo "  Size: 42MB, Layers: 3, Scan: CLEAN"
+      echo ""
+      echo "[2024-01-15 14:30] Push: app:v1.0 -> sha256:xyz789uvw456"
+      echo "  Size: 48MB, Layers: 3, Scan: MALWARE DETECTED"
+      echo "  WARNING: Same tag now points to different image!"
+      echo ""
+      echo "[2024-01-15 15:00] Pod deployment pulls app:v1.0"
+      echo "  Registry returns: sha256:xyz789uvw456 (MALICIOUS)"
+      echo "  Old pods still using: sha256:abc123def456 (CLEAN)"
+      echo "  New pods getting: sha256:xyz789uvw456 (COMPROMISED)"
+      echo ""
+      echo "=== Mitigation ==="
+      echo "1. Use image digest instead of tag"
+      echo "2. Implement tag immutability in registry"
+      echo "3. Use signature verification (Notary, cosign)"
+      echo "4. Require SBoM verification"
+      echo "5. Scan images before deployment"
+      
+      sleep 3600
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: registry-sa
+  namespace: tag-confusion-attack
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-service
+  namespace: tag-confusion-attack
+spec:
+  selector:
+    app: app
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-secure-service
+  namespace: tag-confusion-attack
+spec:
+  selector:
+    app: app-secure
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 80

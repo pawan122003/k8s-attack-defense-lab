@@ -1,0 +1,63 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: k8s-security-cluster
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/your-org/k8s-attack-defense-lab
+    targetRevision: HEAD
+    path: cluster
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+  revisionHistoryLimit: 10
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: k8s-security-defenses
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/your-org/k8s-attack-defense-lab
+    targetRevision: HEAD
+    path: defenses
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+  revisionHistoryLimit: 5
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: k8s-security-monitoring
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/your-org/k8s-attack-defense-lab
+    targetRevision: HEAD
+    path: monitors
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+  revisionHistoryLimit: 5

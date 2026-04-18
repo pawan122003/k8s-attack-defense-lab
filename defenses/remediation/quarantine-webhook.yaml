@@ -1,0 +1,182 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: security-remediation
+  labels:
+    security: remediation
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: remediation-webhook-sa
+  namespace: security-remediation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: remediation-webhook-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/status", "events"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies"]
+  verbs: ["get", "list", "create", "update", "patch", "delete"]
+- apiGroups: ["admissionregistration.k8s.io"]
+  resources: ["mutatingwebhookconfigurations"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: remediation-webhook-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: remediation-webhook-role
+subjects:
+- kind: ServiceAccount
+  name: remediation-webhook-sa
+  namespace: security-remediation
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: remediation-webhook
+  namespace: security-remediation
+  labels:
+    app: remediation-webhook
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: remediation-webhook
+  template:
+    metadata:
+      labels:
+        app: remediation-webhook
+    spec:
+      serviceAccountName: remediation-webhook-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        fsGroup: 101
+      containers:
+      - name: webhook
+        image: nginx:1.21-alpine
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+        ports:
+        - containerPort: 443
+        volumeMounts:
+        - name: tls-certs
+          mountPath: /etc/webhook/certs
+          readOnly: true
+        - name: webhook-config
+          mountPath: /etc/webhook/config
+          readOnly: true
+      volumes:
+      - name: tls-certs
+        secret:
+          secretName: remediation-webhook-tls
+      - name: webhook-config
+        configMap:
+          name: remediation-webhook-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: remediation-webhook-svc
+  namespace: security-remediation
+spec:
+  ports:
+  - port: 443
+    targetPort: 443
+  selector:
+    app: remediation-webhook
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: remediation-webhook-config
+  namespace: security-remediation
+data:
+  config.yaml: |
+    # Remediation webhook configuration
+    quarantine:
+      enabled: true
+      networkIsolation: true
+      forensics: true
+      alert: true
+
+    # Quarantine actions
+    actions:
+      - label: "security.kubernetes.io/quarantined=true"
+      - annotation: "security.kubernetes.io/quarantine-time={{.timestamp}}"
+      - annotation: "security.kubernetes.io/quarantine-reason={{.reason}}"
+      - networkpolicy: "quarantine-deny-all"
+
+    # Forensics collection
+    forensics:
+      collectLogs: true
+      collectEvents: true
+      collectPodSpec: true
+      preserveEvidence: true
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: remediation-webhook-tls
+  namespace: security-remediation
+type: kubernetes.io/tls
+data:
+  tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t  # Placeholder - generate real cert
+  tls.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0t  # Placeholder - generate real key
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: remediation-webhook
+webhooks:
+- name: quarantine.security.example.com
+  clientConfig:
+    service:
+      name: remediation-webhook-svc
+      namespace: security-remediation
+      path: "/quarantine"
+    caBundle: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t  # Placeholder CA
+  rules:
+  - operations: ["CREATE", "UPDATE"]
+    apiGroups: [""]
+    apiVersions: ["v1"]
+    resources: ["pods"]
+    scope: "Namespaced"
+  admissionReviewVersions: ["v1", "v1beta1"]
+  sideEffects: None
+  timeoutSeconds: 10
+  failurePolicy: Ignore  # Don't block pod creation on webhook failure
+  matchPolicy: Equivalent
+  namespaceSelector:
+    matchLabels:
+      security: monitored
+  objectSelector:
+    matchLabels:
+      security.kubernetes.io/quarantined: "true"
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: quarantine-deny-all
+  namespace: security-remediation
+spec:
+  podSelector:
+    matchLabels:
+      security.kubernetes.io/quarantined: "true"
+  policyTypes:
+  - Ingress
+  - Egress
+  # No rules = deny all traffic

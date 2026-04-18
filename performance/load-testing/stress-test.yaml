@@ -1,0 +1,79 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: api-server-stress-test
+  labels:
+    performance-test: api-stress
+spec:
+  parallelism: 10
+  completions: 100
+  template:
+    spec:
+      containers:
+      - name: stress-tester
+        image: curlimages/curl:latest
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          # Generate API server load
+          for i in $(seq 1 1000); do
+            kubectl get pods --all-namespaces > /dev/null 2>&1 &
+            kubectl get services --all-namespaces > /dev/null 2>&1 &
+            kubectl get deployments --all-namespaces > /dev/null 2>&1 &
+          done
+          wait
+      restartPolicy: Never
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: network-stress-test
+  labels:
+    performance-test: network-stress
+spec:
+  parallelism: 20
+  completions: 50
+  template:
+    spec:
+      containers:
+      - name: network-stresser
+        image: alpine:latest
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          apk add --no-cache iperf3
+          # Generate network traffic
+          timeout 300 iperf3 -c network-target.default.svc -P 10 -t 30 || true
+      restartPolicy: Never
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: storage-stress-test
+  labels:
+    performance-test: storage-stress
+spec:
+  parallelism: 5
+  completions: 20
+  template:
+    spec:
+      containers:
+      - name: storage-stresser
+        image: alpine:latest
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          # Generate storage I/O load
+          dd if=/dev/zero of=/tmp/stress-file bs=1M count=100
+          for i in $(seq 1 100); do
+            cp /tmp/stress-file /tmp/stress-file-$i &
+          done
+          wait
+          rm -f /tmp/stress-file*
+      restartPolicy: Never
+      volumeMounts:
+      - name: stress-volume
+        mountPath: /tmp
+      volumes:
+      - name: stress-volume
+        emptyDir: {}

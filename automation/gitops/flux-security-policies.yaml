@@ -1,0 +1,70 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: flux-security-validation
+  annotations:
+    policies.kyverno.io/title: Flux Security Validation
+    policies.kyverno.io/category: Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Flux
+spec:
+  validationFailureAction: enforce
+  background: true
+  rules:
+    - name: validate-flux-deployments
+      match:
+        resources:
+          kinds:
+            - Deployment
+          namespaces:
+            - flux-system
+      validate:
+        message: "Flux deployments must meet security standards"
+        pattern:
+          spec:
+            template:
+              spec:
+                containers:
+                - securityContext:
+                    runAsNonRoot: true
+                    allowPrivilegeEscalation: false
+                    capabilities:
+                      drop:
+                      - ALL
+                securityContext:
+                  runAsNonRoot: true
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: gitops-drift-detection
+  annotations:
+    policies.kyverno.io/title: GitOps Drift Detection
+    policies.kyverno.io/category: GitOps
+    policies.kyverno.io/severity: medium
+spec:
+  validationFailureAction: audit
+  background: true
+  rules:
+    - name: detect-manual-changes
+      match:
+        resources:
+          kinds:
+            - Deployment
+            - Service
+            - ConfigMap
+            - Secret
+      exclude:
+        namespaces:
+          - flux-system
+          - kube-system
+          - kube-public
+          - kube-node-lease
+      validate:
+        message: "Resource not managed by GitOps - manual changes detected"
+        deny:
+          conditions:
+            all:
+            - key: "{{ request.object.metadata.annotations.\"app.kubernetes.io/managed-by\" }}"
+              operator: NotEquals
+              value: flux

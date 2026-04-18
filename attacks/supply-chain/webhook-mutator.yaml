@@ -1,0 +1,234 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: webhook-attack
+---
+# Supply Chain Attack #2: Admission Webhook Bypass
+# Description: Demonstrates how an attacker can bypass admission controllers
+# by exploiting webhook implementation vulnerabilities.
+# This scenario shows:
+# - Pod spec fuzzing to bypass validation webhooks
+# - Injection of malicious sidecar containers
+# - Using webhook response mutation to add privileged containers
+# - Privilege escalation through container injection
+#
+# Detection Points:
+# - Unusual init/sidecar container injection
+# - Privileged containers appearing in otherwise restricted pods
+# - Unexpected capabilities being granted
+# - Webhook audit log manipulation attempts
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webhook-bypass-techniques
+  namespace: webhook-attack
+data:
+  vulnerability: |
+    Webhook Bypass Techniques:
+    1. JSON patch deserialization errors
+    2. Field ordering in admission review
+    3. Resource version conflicts
+    4. Concurrent webhook request race conditions
+    5. Missing webhook scope restrictions (can modify other namespaces)
+    
+  exploit-chain: |
+    Attack Flow:
+    1. Application pod submitted for admission
+    2. ValidatingAdmissionWebhook receives review
+    3. Attacker crafts malformed patch that confuses webhook
+    4. Webhook fails to properly validate injected container
+    5. MutatingAdmissionWebhook accepts modified pod spec
+    6. Privileged init container gets added as sidecar
+    7. Init container escalates to root on host
+    
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webhook-fuzzer-app
+  namespace: webhook-attack
+  labels:
+    app: app-with-mutation
+    attack: supply-chain-webhook
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app-with-mutation
+  template:
+    metadata:
+      labels:
+        app: app-with-mutation
+      annotations:
+        webhook-bypass-attempt: "true"
+        # These annotations simulate what a fuzzing tool would use
+        json-patch-version: "v3.disabled"
+        field-order-exploit: "enabled"
+    spec:
+      serviceAccountName: webhook-bypass-sa
+      containers:
+      # Main application container (appears legitimate)
+      - name: legitimate-app
+        image: nginx:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+      
+      # This simulates what the mutating webhook would add if exploited
+      # In real scenario, this would be injected by the abuse of the webhook
+      - name: injected-init-helper
+        image: alpine:latest
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - |
+          echo "[WEBHOOK BYPASS] Init container successfully injected"
+          echo "[WEBHOOK BYPASS] This container was added by mutating webhook exploit"
+          echo "[WEBHOOK BYPASS] Would escalate privileges here in real attack"
+          # Real exploit chain would:
+          # 1. Access host filesystem via hostPath or docker socket
+          # 2. Escape container namespace
+          # 3. Gain root on node
+          sleep 3600
+        # Simulates attempt to gain elevated permissions
+        securityContext:
+          runAsUser: 0
+          allowPrivilegeEscalation: true
+      
+      # This demonstrates what the webhook should have blocked
+      initContainers:
+      - name: webhook-escape-pod
+        image: alpine:latest
+        command:
+        - sh
+        - -c
+        - |
+          echo "[*] Init container: webhook escape phase"
+          echo "[*] Attempting to access parent namespaces..."
+          # This represents the actual exploitation attempt
+          echo "Init container executed - webhook failed to validate"
+          exit 0
+        securityContext:
+          # Would escalate if using privileged: true and host mounts
+          runAsUser: 0
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: webhook-bypass-sa
+  namespace: webhook-attack
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: webhook-bypass-role
+  namespace: webhook-attack
+rules:
+# Minimal role - attacker tries to expand this
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: webhook-bypass-binding
+  namespace: webhook-attack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: webhook-bypass-role
+subjects:
+- kind: ServiceAccount
+  name: webhook-bypass-sa
+  namespace: webhook-attack
+
+---
+# Webhook Exploit Tool Pod
+# This pod would actively exploit webhook vulnerabilities
+apiVersion: v1
+kind: Pod
+metadata:
+  name: webhook-fuzzer-tool
+  namespace: webhook-attack
+  labels:
+    tool: webhook-fuzzer
+spec:
+  serviceAccountName: webhook-fuzz-sa
+  containers:
+  - name: fuzzer
+    image: curlimages/curl:latest
+    command:
+    - sh
+    - -c
+    - |
+      echo "=== Webhook Fuzzer Tool ==="
+      echo "Scanning for admission webhooks..."
+      
+      # This would enumerate webhooks and test mutations
+      echo "[*] Discovered ValidatingAdmissionWebhooks:"
+      # kubectl get validatingwebhookconfigurations -A
+      
+      echo "[*] Discovered MutatingAdmissionWebhooks:"
+      # kubectl get mutatingwebhookconfigurations -A
+      
+      echo "[*] Crafting malformed admission review..."
+      echo "[*] Testing webhook response parsing..."
+      
+      echo "[*] Attempting JSON patch deserialization bypass..."
+      echo '[{"op":"add","path":"/spec/containers/0/securityContext","value":{"privileged":true}},{"op":"add","path":"/spec/containers/0/volumeMounts","value":[{"name":"hostroot","mountPath":"/mnt/host"}]}]'
+      
+      echo "[*] Testing field reordering attack..."
+      echo "[*] Fuzzing webhook scope restrictions..."
+      
+      sleep 3600
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: webhook-fuzz-sa
+  namespace: webhook-attack
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: webhook-enum-role
+  namespace: webhook-attack
+rules:
+- apiGroups: ["admissionregistration.k8s.io"]
+  resources: ["validatingwebhookconfigurations", "mutatingwebhookconfigurations"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "create"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: webhook-enum-binding
+  namespace: webhook-attack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: webhook-enum-role
+subjects:
+- kind: ServiceAccount
+  name: webhook-fuzz-sa
+  namespace: webhook-attack

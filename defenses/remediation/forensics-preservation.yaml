@@ -1,0 +1,157 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: forensics-preservation-config
+  namespace: security-remediation
+data:
+  preservation-rules.yaml: |
+    # Forensics preservation rules
+    evidence:
+      podSpec: true
+      containerLogs: true
+      previousLogs: true
+      events: true
+      environment: true
+      volumes: true
+      networkConnections: true
+      processes: true
+
+    retention:
+      duration: "7d"  # Keep evidence for 7 days
+      storageClass: "standard"  # Use default storage class
+
+    alert:
+      enabled: true
+      channels: ["slack", "email"]
+      severity: "high"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forensics-collector
+  namespace: security-remediation
+  labels:
+    app: forensics-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: forensics-collector
+  template:
+    metadata:
+      labels:
+        app: forensics-collector
+    spec:
+      serviceAccountName: remediation-webhook-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+      - name: collector
+        image: busybox:1.35
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+        command:
+        - /bin/sh
+        - -c
+        - |
+          #!/bin/sh
+          echo "Forensics collector started"
+          # Watch for quarantined pods and collect evidence
+          while true; do
+            # Find newly quarantined pods
+            kubectl get pods --all-namespaces -l security.kubernetes.io/quarantined=true \
+              -o jsonpath='{range .items[*]}{.metadata.namespace}{","}{.metadata.name}{"\n"}{end}' | \
+            while IFS=',' read -r ns pod; do
+              echo "Collecting forensics for pod: $ns/$pod"
+
+              # Create evidence namespace if it doesn't exist
+              kubectl create namespace forensics-evidence --dry-run=client -o yaml | kubectl apply -f -
+
+              # Collect pod specification
+              kubectl get pod $pod -n $ns -o yaml > /tmp/pod-spec.yaml
+              kubectl create configmap forensics-$ns-$pod-spec \
+                --from-file=pod-spec.yaml=/tmp/pod-spec.yaml \
+                -n forensics-evidence --dry-run=client -o yaml | kubectl apply -f -
+
+              # Collect current logs
+              kubectl logs $pod -n $ns --all-containers=true > /tmp/current-logs.txt 2>/dev/null || echo "No current logs" > /tmp/current-logs.txt
+              kubectl create configmap forensics-$ns-$pod-logs \
+                --from-file=current-logs.txt=/tmp/current-logs.txt \
+                -n forensics-evidence --dry-run=client -o yaml | kubectl apply -f -
+
+              # Collect previous logs if available
+              kubectl logs $pod -n $ns --previous --all-containers=true > /tmp/previous-logs.txt 2>/dev/null || echo "No previous logs" > /tmp/previous-logs.txt
+              kubectl create configmap forensics-$ns-$pod-prevlogs \
+                --from-file=previous-logs.txt=/tmp/previous-logs.txt \
+                -n forensics-evidence --dry-run=client -o yaml | kubectl apply -f -
+
+              # Collect events
+              kubectl get events -n $ns --field-selector involvedObject.name=$pod -o yaml > /tmp/events.yaml
+              kubectl create configmap forensics-$ns-$pod-events \
+                --from-file=events.yaml=/tmp/events.yaml \
+                -n forensics-evidence --dry-run=client -o yaml | kubectl apply -f -
+
+              # Mark pod as evidence collected
+              kubectl annotate pod $pod -n $ns security.kubernetes.io/forensics-collected=true
+
+              echo "Evidence collected for $ns/$pod"
+            done
+
+            sleep 30  # Check every 30 seconds
+          done
+        volumeMounts:
+        - name: tmp-volume
+          mountPath: /tmp
+      volumes:
+      - name: tmp-volume
+        emptyDir: {}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: forensics-cleanup
+  namespace: security-remediation
+spec:
+  schedule: "0 2 * * *"  # Run daily at 2 AM
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: remediation-webhook-sa
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+          containers:
+          - name: cleanup
+            image: busybox:1.35
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+            command:
+            - /bin/sh
+            - -c
+            - |
+              #!/bin/sh
+              echo "Cleaning up old forensics evidence (older than 7 days)"
+
+              # Find and delete old ConfigMaps
+              kubectl get configmaps -n forensics-evidence \
+                --field-selector=metadata.creationTimestamp.lt=$(date -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ) \
+                -o name | xargs -r kubectl delete -n forensics-evidence
+
+              # Clean up empty namespaces
+              kubectl get namespaces forensics-evidence --ignore-not-found=true -o name | \
+              xargs -r kubectl delete
+
+              echo "Forensics cleanup completed"
+          restartPolicy: OnFailure

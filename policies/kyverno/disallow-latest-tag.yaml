@@ -1,0 +1,37 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-latest-tag
+spec:
+  validationFailureAction: enforce
+  rules:
+  - name: latest-tag
+    match:
+      resources:
+        kinds:
+        - Pod
+    validate:
+      message: "Use a specific tag, not 'latest'"
+      pattern:
+        spec:
+          containers:
+          - image: "!*:*latest"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-image-registry
+spec:
+  validationFailureAction: enforce
+  rules:
+  - name: trusted-registries
+    match:
+      resources:
+        kinds:
+        - Pod
+    validate:
+      message: "Image must come from trusted registry"
+      pattern:
+        spec:
+          containers:
+          - image: "!gcr.io*|!docker.io*|!quay.io*|!registry.k8s.io*"

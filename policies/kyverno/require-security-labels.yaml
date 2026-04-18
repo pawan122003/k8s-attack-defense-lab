@@ -1,0 +1,63 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-security-labels
+spec:
+  validationFailureAction: enforce
+  rules:
+  - name: security-labels
+    match:
+      resources:
+        kinds:
+        - Namespace
+    validate:
+      message: "Namespace must have security labels"
+      pattern:
+        metadata:
+          labels:
+            "security.kubernetes.io/classification": "?*"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-privileged-containers
+spec:
+  validationFailureAction: enforce
+  rules:
+  - name: no-privileged
+    match:
+      resources:
+        kinds:
+        - Pod
+    validate:
+      message: "Containers must not run as privileged"
+      pattern:
+        spec:
+          containers:
+          - securityContext:
+              privileged: "!true"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-resource-limits
+spec:
+  validationFailureAction: enforce
+  rules:
+  - name: set-resources
+    match:
+      resources:
+        kinds:
+        - Pod
+    validate:
+      message: "Containers must have resource limits"
+      pattern:
+        spec:
+          containers:
+          - resources:
+              limits:
+                memory: "?*"
+                cpu: "?*"
+              requests:
+                memory: "?*"
+                cpu: "?*"

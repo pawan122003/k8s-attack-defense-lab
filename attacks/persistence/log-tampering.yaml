@@ -1,0 +1,230 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: log-tampering-attack
+---
+# Persistence Attack #2: Kubernetes Event Log Tampering
+# Description: Attacker gains API access and modifies/deletes audit logs
+# to cover tracks and remove evidence of malicious actions.
+#
+# Attack Flow:
+# 1. Compromise: Initial exploit gives pod attack capabilities
+# 2. Escalate: Use RBAC misconfiguration to gain higher permissions
+# 3. Access API: Retrieve service account token with broader permissions
+# 4. Enumerate: Find what logs exist and where they're stored
+# 5. Delete: Remove audit logs showing attack activities
+# 6. Modify: Alter remaining logs to hide attack timeline
+# 7. Cover: Delete pod creation events, deployment changes, RBAC modifications
+#
+# Logs to Tamper:
+# - Kubernetes audit logs (/var/log/audit/audit.log)
+# - Event objects in etcd
+# - Pod logs
+# - Container logs
+#
+# Detection Points:
+# - Gaps in audit log sequence (missing events)
+# - API requests to delete logs (k8s API calls to delete events)
+# - Unusual access to log storage
+# - Rapid deletion of events in short timeframe
+# - Out-of-sequence timestamps in logs
+# - Missing evidence of known events
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: log-tampering-guide
+  namespace: log-tampering-attack
+data:
+  attack-objectives: |
+    Log Tampering Goals:
+    
+    1. Remove Evidence of:
+       - Pod creation/deletion
+       - ClusterRole/Binding creation
+       - Secret access
+       - Unusual API calls
+       - Privilege escalation attempts
+    
+    2. Create False Narrative:
+       - Modify timestamps
+       - Add fake events
+       - Blame legitimate users
+       - Show normal activity instead
+    
+    3. Prevent Detection:
+       - Remove Falco detection rules logs
+       - Delete webhook logs
+       - Clear audit trails
+       - Remove forensic evidence
+    
+    4. Establish Persistence:
+       - Hide backdoor installations
+       - Cover command execution history
+       - Remove rootkit deployment records
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: log-tamperer
+  namespace: log-tampering-attack
+  labels:
+    tool: log-tamperer
+spec:
+  serviceAccountName: tamperer-sa
+  containers:
+  - name: tamperer
+    image: curlimages/curl:latest
+    command:
+    - sh
+    - -c
+    - |
+      echo "=== Kubernetes Event Log Tampering ==="
+      
+      TOKEN=$(cat /run/secrets/kubernetes.io/serviceaccount/token)
+      CA_CERT=/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      NAMESPACE=$(cat /run/secrets/kubernetes.io/serviceaccount/namespace)
+      API_SERVER=$(echo $KUBERNETES_SERVICE_HOST | tr -d ' ')
+      
+      echo "[*] Attempting to delete audit logs..."
+      
+      echo "[*] Step 1: Enumerate events in namespace"
+      curl -s -H "Authorization: Bearer $TOKEN" \
+        --cacert $CA_CERT \
+        https://$API_SERVER:443/api/v1/namespaces/$NAMESPACE/events 2>/dev/null | \
+        head -20
+      
+      echo ""
+      echo "[*] Step 2: Delete events from specific timeframe"
+      echo "[*] Commands (if permissions allow):"
+      echo "  kubectl delete events --all -n kube-system"
+      echo "  kubectl delete events malicious-pod-creation -n default"
+      
+      echo ""
+      echo "[*] Step 3: Modify audit logs"
+      echo "[*] Would access: /var/log/audit/audit.log"
+      echo "[*] Methods:"
+      echo "  - Direct file truncation"
+      echo "  - Line deletion via sed/awk"
+      echo "  - Log rotation manipulation"
+      
+      echo ""
+      echo "[*] Impact:"
+      echo "  ✓ Hide pod creation events"
+      echo "  ✓ Remove RBAC modification evidence"
+      echo "  ✓ Delete secret access logs"
+      echo "  ✓ Prevent timeline reconstruction"
+      echo "  ✓ Frustrate forensic investigation"
+      
+      sleep 3600
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tamperer-sa
+  namespace: log-tampering-attack
+
+---
+# Elevated permissions (what attacker would try to get)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: log-deleter
+  namespace: log-tampering-attack
+rules:
+# Dangerous permissions that would enable log tampering
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["delete", "deletecollection", "get", "list"]
+- apiGroups: ["audit.k8s.io"]
+  resources: ["events"]
+  verbs: ["get", "list", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: log-deleter-binding
+  namespace: log-tampering-attack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: log-deleter
+subjects:
+- kind: ServiceAccount
+  name: tamperer-sa
+  namespace: log-tampering-attack
+
+---
+# Detection: Monitor for event deletions
+apiVersion: v1
+kind: Pod
+metadata:
+  name: log-deletion-monitor
+  namespace: log-tampering-attack
+  labels:
+    tool: monitor
+spec:
+  serviceAccountName: monitor-sa
+  containers:
+  - name: monitor
+    image: curlimages/curl:latest
+    command:
+    - sh
+    - -c
+    - |
+      echo "=== Log Tampering Detection Monitor ==="
+      
+      echo "[*] Red flags to look for:"
+      echo "  • Events deleted in rapid succession"
+      echo "  • All events in namespace deleted"
+      echo "  • Events with modified timestamps"
+      echo "  • Gaps in audit log sequence"
+      echo "  • Pod creation events missing but pod exists"
+      echo "  • RBAC changes without corresponding events"
+      
+      echo ""
+      echo "[*] Detection methods:"
+      echo "  1. Immutable event log store (append-only)"
+      echo "  2. Event replication to external logger"
+      echo "  3. Audit log fingerprinting (hash verification)"
+      echo "  4. Monitor event deletion API calls"
+      echo "  5. Compare audit logs with etcd state"
+      
+      sleep 3600
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: monitor-sa
+  namespace: log-tampering-attack
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: log-monitor
+rules:
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["audit.k8s.io"]
+  resources: ["events"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: log-monitor-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: log-monitor
+subjects:
+- kind: ServiceAccount
+  name: monitor-sa
+  namespace: log-tampering-attack

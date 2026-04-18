@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aws-security-config
+  namespace: kube-system
+data:
+  # AWS-specific security hardening
+  aws-iam-authenticator-config: |
+    clusterID: k8s-attack-defense-lab
+    server:
+      mapRoles:
+        - rolearn: arn:aws:iam::ACCOUNT-ID:role/eks-node-role
+          username: system:node:{{EC2PrivateDNSName}}
+          groups:
+            - system:bootstrappers
+            - system:nodes
+      mapUsers:
+        - userarn: arn:aws:iam::ACCOUNT-ID:user/admin
+          username: admin
+          groups:
+            - system:masters
+
+  # EKS-specific policies
+  eks-pod-security-standards: |
+    apiVersion: policy/v1beta1
+    kind: PodSecurityPolicy
+    metadata:
+      name: eks-restricted
+    spec:
+      privileged: false
+      allowPrivilegeEscalation: false
+      requiredDropCapabilities:
+        - ALL
+      volumes:
+        - 'configMap'
+        - 'emptyDir'
+        - 'projected'
+        - 'secret'
+        - 'downwardAPI'
+        - 'persistentVolumeClaim'
+      hostNetwork: false
+      hostIPC: false
+      hostPID: false
+      runAsUser:
+        rule: 'MustRunAsNonRoot'
+      seLinux:
+        rule: 'RunAsAny'
+      supplementalGroups:
+        rule: 'MustRunAs'
+        ranges:
+          - min: 1
+            max: 65535
+      fsGroup:
+        rule: 'MustRunAs'
+        ranges:
+          - min: 1
+            max: 65535

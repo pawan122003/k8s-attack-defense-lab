@@ -1,0 +1,281 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubelet-api-attack
+---
+# Lateral Movement Attack #2: Kubelet API Exploitation
+# Description: Demonstrates unauthorized access to Kubelet API on localhost:10250
+# 
+# Attack Flow:
+# 1. Compromise: Pod with network access to node
+# 2. Discover: Kubelet API listening on localhost:10250 (from pod's perspective, node IP)
+# 3. Enumerate: Query /api/v1/nodes, /etc/cni/net.d/, container logs
+# 4. Exploit: Read logs of privileged containers, extract credentials
+# 5. Escalate: Execute commands in sibling pods, escape via privileged container
+#
+# Kubelet API Capabilities (if unauthenticated):
+# - /api/v1/nodes/*/pods - List all pods on node
+# - /api/v1/nodes/*/proxy/logs/* - Read container logs
+# - /api/v1/nodes/*/proxy/exec/* - Execute commands
+# - Query container environment variables
+# - Access node host filesystem
+#
+# Detection Points:
+# - Unexpected connections to localhost:10250
+# - Kubelet API endpoint enumeration
+# - Attempts to query other pods' logs/exec
+# - Port scanner activity for Kubelet ports
+# - Connections from non-system pods to Kubelet
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubelet-attack-guide
+  namespace: kubelet-api-attack
+data:
+  endpoints: |
+    Kubelet API Endpoints:
+    - GET /api/v1/nodes/{node_name}/pods
+    - GET /api/v1/nodes/{node_name}/proxy/logs/{pod_name}/{container}
+    - POST /api/v1/nodes/{node_name}/proxy/exec/{pod}/{container}
+    - GET /api/v1/nodes/{node_name}/proxy/metrics
+    - GET /api/v1/nodes/{node_name}/proxy/metrics/cadvisor
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubelet-attacker
+  namespace: kubelet-api-attack
+  labels:
+    app: kubelet-scanner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubelet-scanner
+  template:
+    metadata:
+      labels:
+        app: kubelet-scanner
+      annotations:
+        attack-vector: "kubelet-api"
+    spec:
+      serviceAccountName: kubelet-attacker-sa
+      hostNetwork: false  # Network namespace separated (but can still access node)
+      containers:
+      - name: attacker
+        image: curlimages/curl:latest
+        env:
+        - name: KUBERNETES_SERVICE_HOST
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        command:
+        - sh
+        - -c
+        - |
+          echo "=== Kubelet API Attack ==="
+          
+          # Get kubelet endpoint (node IP)
+          NODE_IP=$(cat /run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo "127.0.0.1")
+          # Actually get pod's node IP
+          POD_HOST_IP=$(kubectl get pod $HOSTNAME -n kubelet-api-attack -o jsonpath='{.status.hostIP}' 2>/dev/null || echo "UNKNOWN")
+          
+          echo "[*] Attempting to query Kubelet API"
+          echo "[*] Kubelet typically listens on: node-ip:10250"
+          
+          # Simulate discovering kubelet endpoint
+          echo "[*] Port scanning for Kubelet (10250)..."
+          echo "[*] Common configurations:"
+          echo "  - Unauthenticated (no TLS, no auth required)"
+          echo "  - TLS but no client certificate verification"
+          echo "  - TLS with client cert but misconfigured RBAC"
+          
+          echo ""
+          echo "[*] Querying Kubelet API endpoints:"
+          
+          # Would attempt:
+          # curl -k https://127.0.0.1:10250/api/v1/nodes/$(hostname)/pods
+          # curl -k https://127.0.0.1:10250/api/v1/nodes/$(hostname)/proxy/logs
+          
+          echo "[*] If successful, attacker can:"
+          echo "  1. Enumerate pods running on node"
+          echo "  2. Read container logs (looking for credentials)"
+          echo "  3. Execute commands in sibling containers"
+          echo "  4. Access container environment variables"
+          echo "  5. Exfiltrate sensitive data"
+          
+          echo ""
+          echo "[*] Mitigation:"
+          echo "  - Enable Kubelet authentication (--authentication-token-webhook)"
+          echo "  - Require client certificates (--client-ca-file)"
+          echo "  - Use authorization (--authorization-mode=Webhook)"
+          echo "  - Restrict network access via NetworkPolicy"
+          echo "  - Disable anonymous authentication"
+          
+          sleep 3600
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubelet-attacker-sa
+  namespace: kubelet-api-attack
+
+---
+# Privileged pod that Kubelet attacker might try to access
+apiVersion: v1
+kind: Pod
+metadata:
+  name: system-pod-with-secrets
+  namespace: kubelet-api-attack
+  labels:
+    system: critical
+spec:
+  serviceAccountName: system-sa
+  containers:
+  - name: system-app
+    image: nginx:latest
+    env:
+    - name: DB_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: system-secrets
+          key: database-password
+    - name: API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: system-secrets
+          key: api-key
+    - name: INTERNAL_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: system-secrets
+          key: internal-token
+    securityContext:
+      privileged: true
+      runAsUser: 0
+    volumeMounts:
+    - name: host-root
+      mountPath: /host
+  volumes:
+  - name: host-root
+    hostPath:
+      path: /
+      type: Directory
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: system-sa
+  namespace: kubelet-api-attack
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: system-secrets
+  namespace: kubelet-api-attack
+type: Opaque
+stringData:
+  database-password: "prod-db-password-2024-super-secret"
+  api-key: "sk_prod_123456789abcdefg"
+  internal-token: "internal.cluster.token.v1.xyz9999===="
+
+---
+# RBAC to simulate system SA
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: system-role
+  namespace: kubelet-api-attack
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "create"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: system-rolebinding
+  namespace: kubelet-api-attack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: system-role
+subjects:
+- kind: ServiceAccount
+  name: system-sa
+  namespace: kubelet-api-attack
+
+---
+# Kubelet port scanner pod
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kubelet-port-scanner
+  namespace: kubelet-api-attack
+  labels:
+    tool: scanner
+spec:
+  serviceAccountName: kubelet-attacker-sa
+  containers:
+  - name: scanner
+    image: nmap/nmap:latest
+    command:
+    - sh
+    - -c
+    - |
+      echo "=== Kubelet Port Scanner ==="
+      echo "[*] Scanning for Kubelet API (port 10250)"
+      
+      # Get node IP
+      NODE_IP=$(hostname -I | awk '{print $1}')
+      echo "[*] Scanning node: $NODE_IP"
+      
+      # Nmap would scan and find port 10250
+      echo "[*] Common Kubelet ports:"
+      echo "  - 10250/tcp (Kubelet API)"
+      echo "  - 10248/tcp (Kubelet healthz)"
+      echo "  - 10249/tcp (Metrics)"
+      
+      echo "[*] If ports respond without auth:"
+      echo "  Severity: CRITICAL"
+      echo "  Attacker can enumerate all pods and access logs"
+      
+      sleep 3600
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubelet-attacker-role
+  namespace: kubelet-api-attack
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubelet-attacker-binding
+  namespace: kubelet-api-attack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubelet-attacker-role
+subjects:
+- kind: ServiceAccount
+  name: kubelet-attacker-sa
+  namespace: kubelet-api-attack

