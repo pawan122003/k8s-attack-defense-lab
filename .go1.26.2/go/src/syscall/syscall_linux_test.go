@@ -287,7 +287,7 @@ func syscallNoError() {
 // reference uapi/linux/prctl.h
 const (
 	PR_GET_KEEPCAPS uintptr = 7
-	PR_SET_KEEPCAPS         = 8
+	PR_SET_KEEPCAPS uintptr = 8
 )
 
 // TestAllThreadsSyscall tests that the go runtime can perform
@@ -503,7 +503,6 @@ func compareStatus(filter, expect string) error {
 func killAThread(c <-chan struct{}) {
 	runtime.LockOSThread()
 	<-c
-	return
 }
 
 // TestSetuidEtc performs tests on all of the wrapped system calls
