@@ -9,9 +9,19 @@ spec:
   completions: 100
   template:
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
       containers:
       - name: stress-tester
         image: curlimages/curl:latest
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
         command: ["/bin/sh", "-c"]
         args:
         - |
@@ -35,9 +45,19 @@ spec:
   completions: 50
   template:
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
       containers:
       - name: network-stresser
         image: alpine:latest
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
         command: ["/bin/sh", "-c"]
         args:
         - |
@@ -57,9 +77,19 @@ spec:
   completions: 20
   template:
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
       containers:
       - name: storage-stresser
         image: alpine:latest
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
         command: ["/bin/sh", "-c"]
         args:
         - |

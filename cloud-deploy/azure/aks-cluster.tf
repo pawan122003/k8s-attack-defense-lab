@@ -144,7 +144,7 @@ resource "azurerm_container_registry" "aks_acr" {
   name                = "${replace(var.cluster_name, "-", "")}acr"
   resource_group_name = azurerm_resource_group.aks_rg.name
   location            = azurerm_resource_group.aks_rg.location
-  sku                 = "Basic"
+  sku                 = "Standard"
   admin_enabled       = false
 
   # Enable content trust

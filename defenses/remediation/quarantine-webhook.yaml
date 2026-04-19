@@ -59,17 +59,33 @@ spec:
       serviceAccountName: remediation-webhook-sa
       securityContext:
         runAsNonRoot: true
-        runAsUser: 101
-        fsGroup: 101
+        runAsUser: 65534
+        fsGroup: 65534
       containers:
       - name: webhook
         image: nginx:1.21-alpine
+        imagePullPolicy: Always
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
+          runAsUser: 65534
           capabilities:
             drop:
               - ALL
+        resources:
+          limits:
+            cpu: 200m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 443
+            scheme: HTTPS
+          initialDelaySeconds: 30
+          periodSeconds: 60
         ports:
         - containerPort: 443
         volumeMounts:

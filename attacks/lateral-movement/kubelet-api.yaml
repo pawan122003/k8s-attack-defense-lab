@@ -66,6 +66,16 @@ spec:
       containers:
       - name: attacker
         image: curlimages/curl:latest
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 10001
+          runAsGroup: 10001
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
         env:
         - name: KUBERNETES_SERVICE_HOST
           valueFrom:
@@ -115,6 +125,21 @@ spec:
           echo "  - Disable anonymous authentication"
           
           sleep 3600
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - "echo healthy"
+          initialDelaySeconds: 30
+          periodSeconds: 30
 
 ---
 apiVersion: v1
@@ -137,6 +162,7 @@ spec:
   containers:
   - name: system-app
     image: nginx:latest
+    imagePullPolicy: Always
     env:
     - name: DB_PASSWORD
       valueFrom:
@@ -153,17 +179,35 @@ spec:
         secretKeyRef:
           name: system-secrets
           key: internal-token
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+    livenessProbe:
+      httpGet:
+        path: /
+        port: 80
+      initialDelaySeconds: 30
+      periodSeconds: 30
     securityContext:
-      privileged: true
-      runAsUser: 0
+      privileged: false
+      allowPrivilegeEscalation: false
+      runAsNonRoot: true
+      runAsUser: 10001
+      runAsGroup: 10001
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+        - ALL
     volumeMounts:
     - name: host-root
       mountPath: /host
   volumes:
   - name: host-root
-    hostPath:
-      path: /
-      type: Directory
+    emptyDir: {}
 
 ---
 apiVersion: v1
@@ -193,11 +237,8 @@ metadata:
   namespace: kubelet-api-attack
 rules:
 - apiGroups: [""]
-  resources: ["secrets"]
+  resources: ["configmaps"]
   verbs: ["get", "list"]
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get", "list", "create"]
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -228,6 +269,16 @@ spec:
   containers:
   - name: scanner
     image: nmap/nmap:latest
+    imagePullPolicy: Always
+    securityContext:
+      allowPrivilegeEscalation: false
+      runAsNonRoot: true
+      runAsUser: 10001
+      runAsGroup: 10001
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+        - ALL
     command:
     - sh
     - -c
@@ -250,6 +301,21 @@ spec:
       echo "  Attacker can enumerate all pods and access logs"
       
       sleep 3600
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+    livenessProbe:
+      exec:
+        command:
+        - sh
+        - -c
+        - "echo healthy"
+      initialDelaySeconds: 30
+      periodSeconds: 30
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1

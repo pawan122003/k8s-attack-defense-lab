@@ -63,6 +63,7 @@ resource "aws_eks_cluster" "eks_cluster" {
 
   vpc_config {
     subnet_ids = aws_subnet.eks_subnets[*].id
+    endpoint_public_access = false
   }
 
   # Enable encryption
@@ -211,6 +212,7 @@ resource "aws_security_group" "eks_cluster_sg" {
 resource "aws_cloudwatch_log_group" "eks_log_group" {
   name              = "/aws/eks/${var.cluster_name}/cluster"
   retention_in_days = 30
+  kms_key_id        = aws_kms_key.eks.arn
 }
 
 # Outputs

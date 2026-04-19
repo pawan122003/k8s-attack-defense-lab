@@ -45,17 +45,34 @@ spec:
       serviceAccountName: remediation-webhook-sa
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 1000
+        runAsUser: 65534
+        fsGroup: 65534
       containers:
       - name: collector
         image: busybox:1.35
+        imagePullPolicy: Always
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
+          runAsUser: 65534
           capabilities:
             drop:
               - ALL
+        resources:
+          limits:
+            cpu: 200m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        livenessProbe:
+          exec:
+            command:
+              - sh
+              - -c
+              - ps aux | grep collector
+          initialDelaySeconds: 30
+          periodSeconds: 60
         command:
         - /bin/sh
         - -c
@@ -126,17 +143,34 @@ spec:
           serviceAccountName: remediation-webhook-sa
           securityContext:
             runAsNonRoot: true
-            runAsUser: 1000
-            fsGroup: 1000
+            runAsUser: 65534
+            fsGroup: 65534
           containers:
           - name: cleanup
             image: busybox:1.35
+            imagePullPolicy: Always
             securityContext:
               allowPrivilegeEscalation: false
               readOnlyRootFilesystem: true
+              runAsUser: 65534
               capabilities:
                 drop:
                   - ALL
+            resources:
+              limits:
+                cpu: 200m
+                memory: 256Mi
+              requests:
+                cpu: 100m
+                memory: 128Mi
+            livenessProbe:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - ps aux | grep cleanup
+              initialDelaySeconds: 30
+              periodSeconds: 60
             command:
             - /bin/sh
             - -c

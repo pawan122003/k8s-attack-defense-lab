@@ -33,6 +33,10 @@ variable "cluster_name" {
 resource "google_compute_network" "gke_network" {
   name                    = "${var.cluster_name}-network"
   auto_create_subnetworks = false
+
+  enable_ula_internal_ipv6 = false
+
+  mtu = 1460
 }
 
 resource "google_compute_subnetwork" "gke_subnetwork" {
@@ -40,6 +44,12 @@ resource "google_compute_subnetwork" "gke_subnetwork" {
   network       = google_compute_network.gke_network.id
   ip_cidr_range = "10.0.0.0/16"
   region        = var.gcp_region
+
+  log_config {
+    aggregation_interval = "INTERVAL_10_MIN"
+    flow_sampling        = 0.5
+    metadata             = "INCLUDE_ALL_METADATA"
+  }
 
   secondary_ip_range {
     range_name    = "pods"
@@ -59,6 +69,11 @@ resource "google_container_cluster" "gke_cluster" {
   initial_node_count = 1
   network            = google_compute_network.gke_network.id
   subnetwork         = google_compute_subnetwork.gke_subnetwork.id
+
+  resource_labels = {
+    environment = "lab"
+    purpose     = "security-training"
+  }
 
   # Enable workload identity
   workload_identity_config {
@@ -100,8 +115,8 @@ resource "google_container_cluster" "gke_cluster" {
   # Enable master authorized networks
   master_authorized_networks_config {
     cidr_blocks {
-      cidr_block   = "0.0.0.0/0"
-      display_name = "All networks (for lab purposes)"
+      cidr_block   = "192.168.0.0/24"
+      display_name = "Lab network"
     }
   }
 

@@ -1,4 +1,30 @@
 {
     "snyk.advanced.organization": "be216b83-dcf3-4f21-ada9-edf0712d4d29",
-    "snyk.advanced.autoSelectOrganization": true
+    "snyk.advanced.autoSelectOrganization": true,
+    "snyk.features.infrastructureAsCode": false,
+    "snyk.excludes": [".go1.26.2/**"],
+    "go.goroot": "${workspaceFolder}/.go1.26.2/go",
+    "go.toolsEnvVars": {
+        "GOROOT": "${workspaceFolder}/.go1.26.2/go",
+        "GOOS": "linux",
+        "GOARCH": "amd64",
+        "GOCACHE": "${workspaceFolder}/.gocache"
+    },
+    "gopls": {
+        "env": {
+            "GOROOT": "${workspaceFolder}/.go1.26.2/go",
+            "GOOS": "linux",
+            "GOARCH": "amd64",
+            "GOCACHE": "${workspaceFolder}/.gocache"
+        }
+    },
+    "files.exclude": {
+        ".go1.26.2": true
+    },
+    "search.exclude": {
+        ".go1.26.2": true
+    },
+    "files.associations": {
+        "**/.go1.26.2/go/src/cmd/cgo/internal/testcshared/testdata/*.c": "plaintext"
+    }
 }
